@@ -601,6 +601,22 @@ def print_block(
     print()
 
 
+def interval_seconds(value: str) -> int:
+    """argparse type: parse --interval as a positive integer (seconds, >= 1).
+
+    Shared by this CLI and tray.py's standalone entry so both reject the same
+    inputs. Keeping the offending value in the error message makes the
+    argparse diagnostic actionable.
+    """
+    try:
+        n = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"must be an integer, got {value!r}") from exc
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1 second, got {n}")
+    return n
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Show Codex + Claude remaining quota")
     ap.add_argument("--json", action="store_true", help="JSON output")
@@ -609,8 +625,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--no-color", action="store_true")
     ap.add_argument("--tray", action="store_true",
                     help="Run as system tray app (requires: pip install pystray Pillow winotify)")
-    ap.add_argument("--interval", type=int, default=300,
-                    help="Tray poll interval in seconds (default: 300)")
+    ap.add_argument("--interval", type=interval_seconds, default=300,
+                    help="Tray poll interval in seconds (default: 300, minimum: 1)")
     args = ap.parse_args(argv)
 
     if args.tray:

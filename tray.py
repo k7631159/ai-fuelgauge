@@ -256,7 +256,7 @@ if __name__ == "__main__":
     import argparse
 
     ap = argparse.ArgumentParser(description="ai-fuelgauge tray mode")
-    ap.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS,
-                    help="poll interval in seconds (default: 300)")
+    ap.add_argument("--interval", type=afg.interval_seconds, default=DEFAULT_INTERVAL_SECONDS,
+                    help="poll interval in seconds (default: 300, minimum: 1)")
     args = ap.parse_args()
     sys.exit(run_tray(interval=args.interval))
