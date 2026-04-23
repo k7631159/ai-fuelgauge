@@ -326,10 +326,20 @@ def probe_codex_fresh(debug: bool = False) -> dict | None:
         }
 
     # Optionally surface additional rate limits (e.g. Spark) if any are actually used.
+    # The JSON-RPC response echoes the top-level rateLimits under
+    # rateLimitsByLimitId (observed key: "codex"), which would otherwise
+    # duplicate the main bucket in `additional`. Skip by matching the
+    # top-level limitId — authoritative identity check. When limitId is
+    # absent we deliberately do NOT fall back to value-matching: a genuinely
+    # distinct bucket could coincidentally share values at a given moment,
+    # and silently dropping it is worse than letting a possible echo through.
     extra = r.get("rateLimitsByLimitId") or {}
+    top_limit_id = rl.get("limitId")
     additional = []
     for lid, block in extra.items():
         if not isinstance(block, dict):
+            continue
+        if top_limit_id and lid == top_limit_id:
             continue
         p = normalize(block.get("primary") or {})
         s = normalize(block.get("secondary") or {})
