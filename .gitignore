@@ -31,3 +31,7 @@ usage-quota.json
 
 # Local testing
 *.log
+
+# Per-machine handoff notes for AI assistants (private context)
+CLAUDE.md
+REVIEW_HANDOFF.md
