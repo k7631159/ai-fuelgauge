@@ -145,6 +145,10 @@ class TrayApp:
         self._notified_secondary = False
         self.icon: "pystray.Icon | None" = None
         self._stop = threading.Event()
+        # Non-blocking guard: held while a fetch is in flight so repeated menu
+        # clicks (or a poller tick racing a manual refresh) skip instead of
+        # stacking concurrent probes against the Codex / Claude APIs.
+        self._fetch_lock = threading.Lock()
 
     # --- menu item text getters (callables so they re-evaluate on menu open) ---
     def _codex_5h(self, _item):
@@ -174,14 +178,18 @@ class TrayApp:
 
     # --- core ---
     def _do_fetch(self):
+        if not self._fetch_lock.acquire(blocking=False):
+            return  # another fetch is in flight — skip to avoid overlap
         try:
             snap = _snapshot()
         except Exception as e:
             sys.stderr.write(f"fetch failed: {e}\n")
-            return
-        self.snapshot = snap
-        self._check_thresholds(snap)
-        self._apply_to_icon()
+        else:
+            self.snapshot = snap
+            self._check_thresholds(snap)
+            self._apply_to_icon()
+        finally:
+            self._fetch_lock.release()
 
     def _check_thresholds(self, snap: dict) -> None:
         max_p = 0.0
