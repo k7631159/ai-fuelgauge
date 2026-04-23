@@ -703,24 +703,39 @@ def main(argv: list[str]) -> int:
         print(f"{C.red if use_color else ''}Claude error: {claude['error']}{C.reset if use_color else ''}")
     else:
         status = claude.get("status")
-        if status and status >= 400:
+        http_error = bool(status) and status >= 400
+        primary = claude.get("primary") or {}
+        secondary = claude.get("secondary") or {}
+        # 429 (and some 4xx) still carry rate-limit headers, so probe_claude_quota
+        # may have parsed useful reset/utilization data even on an error response.
+        # Surface the quota block whenever anything was extracted; the HTTP status
+        # is then shown as a trailing note rather than suppressing the data.
+        have_parsed_data = any(
+            w.get("used_percent") is not None or w.get("reset_in_seconds") is not None
+            for w in (primary, secondary)
+        )
+        if http_error and not have_parsed_data:
             print(f"{C.red if use_color else ''}Claude probe HTTP {status}{C.reset if use_color else ''}")
-            if args.debug and claude.get("headers_all"):
-                print("--- all response headers ---")
-                for k, v in claude["headers_all"].items():
-                    print(f"  {k}: {v}")
         else:
             print_block(
                 "Claude",
                 None,
-                claude.get("primary"),
-                claude.get("secondary"),
+                primary,
+                secondary,
                 use_color,
                 no_data_hint="no unified rate-limit headers (API-key user or Team/Enterprise plan?)",
             )
-            if args.debug:
-                print("--- raw rate limit headers ---")
-                for k, v in (claude.get("rl_headers_raw") or {}).items():
+            if http_error:
+                col = C.yellow if use_color else ""
+                rst = C.reset if use_color else ""
+                print(f"  {col}note: HTTP {status} from probe — figures above parsed from response headers{rst}")
+        if args.debug:
+            print("--- raw rate limit headers ---")
+            for k, v in (claude.get("rl_headers_raw") or {}).items():
+                print(f"  {k}: {v}")
+            if http_error and claude.get("headers_all"):
+                print("--- all response headers ---")
+                for k, v in claude["headers_all"].items():
                     print(f"  {k}: {v}")
 
     if data.get("_from_cache"):
