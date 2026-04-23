@@ -8,11 +8,11 @@ Displays 5-hour and weekly rate-limit utilization for:
     (works for Pro / Max; Team / Enterprise / API-key may lack unified headers)
 
 Invocation:
-  python usage.py                  Show quota (30s cache)
-  python usage.py --json           Machine-readable JSON
-  python usage.py --no-cache       Force refresh
-  python usage.py --debug          Dump raw responses for debugging
-  python usage.py --no-color       Disable ANSI colors
+  python ai_fuelgauge.py                  Show quota (30s cache)
+  python ai_fuelgauge.py --json           Machine-readable JSON
+  python ai_fuelgauge.py --no-cache       Force refresh
+  python ai_fuelgauge.py --debug          Dump raw responses for debugging
+  python ai_fuelgauge.py --no-color       Disable ANSI colors
 
 Credential resolution:
   Codex:  ~/.codex/auth.json handled by `codex app-server`
