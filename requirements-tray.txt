@@ -1,0 +1,6 @@
+# Dependencies for the optional system-tray mode.
+# The CLI itself uses only the Python standard library.
+pystray>=0.19
+Pillow>=9.0
+winotify>=1.1; platform_system=="Windows"
+plyer>=2.1; platform_system!="Windows"

@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-fuelgauge"
+version = "0.1.0"
+description = "Peek at your AI subscription fuel gauge — Codex + Claude quota side by side."
+readme = "README.md"
+requires-python = ">=3.7"
+license = { text = "MIT" }
+authors = [{ name = "Jason" }]
+keywords = ["ai", "llm", "chatgpt", "claude", "codex", "openai", "anthropic", "quota", "rate-limit", "subscription", "cli"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Utilities",
+]
+dependencies = []
+
+[project.optional-dependencies]
+tray = [
+    "pystray>=0.19",
+    "Pillow>=9.0",
+    "winotify>=1.1; platform_system=='Windows'",
+    "plyer>=2.1; platform_system!='Windows'",
+]
+
+[project.urls]
+Homepage = "https://github.com/k7631159/ai-fuelgauge"
+Issues = "https://github.com/k7631159/ai-fuelgauge/issues"
+
+[project.scripts]
+ai-fuelgauge = "ai_fuelgauge:main_entry"
+
+# Single-file layout: the module is at the repo root.
+[tool.setuptools]
+py-modules = ["ai_fuelgauge", "tray"]

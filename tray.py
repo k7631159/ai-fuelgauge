@@ -1,0 +1,262 @@
+"""tray.py — system tray mode for ai-fuelgauge.
+
+Runs a small icon in the Windows system tray / macOS menu bar / Linux tray.
+Polls quota every N minutes and updates the icon color:
+  - green  < 70%
+  - orange 70..89%
+  - red    >= 90%
+
+Fires a desktop notification when the 5h window crosses 80% or the weekly
+window crosses 90% (fired once per threshold crossing, reset on drop).
+
+Requires: pystray, Pillow (+ winotify on Windows, plyer elsewhere).
+"""
+from __future__ import annotations
+
+import sys
+import threading
+import time
+from pathlib import Path
+
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+except ImportError as e:
+    sys.stderr.write(
+        f"Missing tray dependency: {e}\n"
+        "Install with: pip install --user pystray Pillow\n"
+    )
+    sys.exit(1)
+
+# Platform-native notification backend.
+_NOTIFY = None
+if sys.platform == "win32":
+    try:
+        from winotify import Notification as _WinNotify  # type: ignore
+        _NOTIFY = "winotify"
+    except ImportError:
+        pass
+if _NOTIFY is None:
+    try:
+        from plyer import notification as _PlyerNotify  # type: ignore
+        _NOTIFY = "plyer"
+    except ImportError:
+        pass
+
+
+def _notify(title: str, message: str) -> None:
+    if _NOTIFY == "winotify":
+        try:
+            _WinNotify(app_id="ai-fuelgauge", title=title, msg=message).show()
+        except Exception as e:
+            sys.stderr.write(f"winotify failed: {e}\n")
+    elif _NOTIFY == "plyer":
+        try:
+            _PlyerNotify.notify(title=title, message=message, app_name="ai-fuelgauge")
+        except Exception as e:
+            sys.stderr.write(f"plyer failed: {e}\n")
+    else:
+        sys.stderr.write(f"NOTIFY (no backend): {title} — {message}\n")
+
+
+# Reuse probe functions from sibling module.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ai_fuelgauge as afg  # noqa: E402
+
+
+DEFAULT_INTERVAL_SECONDS = 300
+THRESHOLD_PRIMARY_PCT = 80   # 5h window
+THRESHOLD_SECONDARY_PCT = 90  # weekly window
+HYSTERESIS_PCT = 10           # must drop this far below threshold before re-notifying
+
+
+def _make_icon(max_pct: float, size: int = 64) -> "Image.Image":
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    if max_pct >= 90:
+        fill = (231, 76, 60, 255)    # red
+    elif max_pct >= 70:
+        fill = (243, 156, 18, 255)   # orange
+    else:
+        fill = (46, 204, 113, 255)   # green
+    margin = 6
+    d.ellipse([margin, margin, size - margin, size - margin], fill=fill)
+    return img
+
+
+def _snapshot() -> dict:
+    codex = afg.probe_codex_fresh()
+    if not codex or codex.get("error"):
+        fallback = afg.read_codex_quota()
+        if fallback:
+            codex = fallback
+            if isinstance(codex, dict):
+                codex["_source"] = "sqlite-snapshot"
+    claude = afg.probe_claude_quota()
+    return {"codex": codex, "claude": claude}
+
+
+def _max_pct(snap: dict) -> float:
+    m = 0.0
+    for key in ("codex", "claude"):
+        d = snap.get(key) or {}
+        if isinstance(d, dict):
+            for w in ("primary", "secondary"):
+                p = (d.get(w) or {}).get("used_percent")
+                if p is not None:
+                    try:
+                        m = max(m, float(p))
+                    except (TypeError, ValueError):
+                        pass
+    return m
+
+
+def _summary_line(snap: dict) -> str:
+    parts = []
+    for label, key in (("Codex", "codex"), ("Claude", "claude")):
+        d = snap.get(key) or {}
+        if not d or (isinstance(d, dict) and d.get("error")):
+            parts.append(f"{label} ?")
+            continue
+        p = (d.get("primary") or {}).get("used_percent")
+        s = (d.get("secondary") or {}).get("used_percent")
+        p_str = f"{p:.0f}%" if p is not None else "?"
+        s_str = f"{s:.0f}%" if s is not None else "?"
+        parts.append(f"{label} {p_str}/{s_str}")
+    return " | ".join(parts)
+
+
+def _pct_or_none(d, window) -> "float | None":
+    if not isinstance(d, dict):
+        return None
+    w = d.get(window) or {}
+    p = w.get("used_percent")
+    try:
+        return float(p) if p is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+class TrayApp:
+    def __init__(self, interval: int = DEFAULT_INTERVAL_SECONDS) -> None:
+        self.interval = interval
+        self.snapshot: dict = {}
+        self._notified_primary = False
+        self._notified_secondary = False
+        self.icon: "pystray.Icon | None" = None
+        self._stop = threading.Event()
+
+    # --- menu item text getters (callables so they re-evaluate on menu open) ---
+    def _codex_5h(self, _item):
+        p = _pct_or_none(self.snapshot.get("codex"), "primary")
+        return f"Codex 5h: {p:.0f}%" if p is not None else "Codex 5h: ?"
+
+    def _codex_week(self, _item):
+        p = _pct_or_none(self.snapshot.get("codex"), "secondary")
+        return f"Codex week: {p:.0f}%" if p is not None else "Codex week: ?"
+
+    def _claude_5h(self, _item):
+        p = _pct_or_none(self.snapshot.get("claude"), "primary")
+        return f"Claude 5h: {p:.0f}%" if p is not None else "Claude 5h: ?"
+
+    def _claude_week(self, _item):
+        p = _pct_or_none(self.snapshot.get("claude"), "secondary")
+        return f"Claude week: {p:.0f}%" if p is not None else "Claude week: ?"
+
+    # --- actions ---
+    def _refresh_now(self, _icon=None, _item=None):
+        threading.Thread(target=self._do_fetch, daemon=True).start()
+
+    def _quit(self, _icon=None, _item=None):
+        self._stop.set()
+        if self.icon:
+            self.icon.stop()
+
+    # --- core ---
+    def _do_fetch(self):
+        try:
+            snap = _snapshot()
+        except Exception as e:
+            sys.stderr.write(f"fetch failed: {e}\n")
+            return
+        self.snapshot = snap
+        self._check_thresholds(snap)
+        self._apply_to_icon()
+
+    def _check_thresholds(self, snap: dict) -> None:
+        max_p = 0.0
+        max_s = 0.0
+        for key in ("codex", "claude"):
+            d = snap.get(key) or {}
+            p = _pct_or_none(d, "primary") or 0.0
+            s = _pct_or_none(d, "secondary") or 0.0
+            max_p = max(max_p, p)
+            max_s = max(max_s, s)
+
+        if max_p >= THRESHOLD_PRIMARY_PCT and not self._notified_primary:
+            _notify("AI quota warning", f"5-hour window at {max_p:.0f}%")
+            self._notified_primary = True
+        elif max_p < THRESHOLD_PRIMARY_PCT - HYSTERESIS_PCT:
+            self._notified_primary = False
+
+        if max_s >= THRESHOLD_SECONDARY_PCT and not self._notified_secondary:
+            _notify("AI quota warning", f"Weekly window at {max_s:.0f}%")
+            self._notified_secondary = True
+        elif max_s < THRESHOLD_SECONDARY_PCT - HYSTERESIS_PCT:
+            self._notified_secondary = False
+
+    def _apply_to_icon(self):
+        if not self.icon:
+            return
+        m = _max_pct(self.snapshot)
+        self.icon.icon = _make_icon(m)
+        self.icon.title = _summary_line(self.snapshot)
+        try:
+            self.icon.update_menu()
+        except Exception:
+            pass
+
+    def _poller(self):
+        while not self._stop.is_set():
+            if self._stop.wait(self.interval):
+                break
+            self._do_fetch()
+
+    def _menu(self) -> "pystray.Menu":
+        return pystray.Menu(
+            pystray.MenuItem(self._codex_5h, None, enabled=False),
+            pystray.MenuItem(self._codex_week, None, enabled=False),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(self._claude_5h, None, enabled=False),
+            pystray.MenuItem(self._claude_week, None, enabled=False),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Refresh now", self._refresh_now),
+            pystray.MenuItem("Quit", self._quit),
+        )
+
+    def run(self):
+        # Initial synchronous fetch so the first icon is meaningful.
+        self._do_fetch()
+        self.icon = pystray.Icon(
+            "ai-fuelgauge",
+            icon=_make_icon(_max_pct(self.snapshot)),
+            title=_summary_line(self.snapshot),
+            menu=self._menu(),
+        )
+        threading.Thread(target=self._poller, daemon=True).start()
+        self.icon.run()  # blocks until _quit()
+
+
+def run_tray(interval: int = DEFAULT_INTERVAL_SECONDS) -> int:
+    TrayApp(interval=interval).run()
+    return 0
+
+
+if __name__ == "__main__":
+    import argparse
+
+    ap = argparse.ArgumentParser(description="ai-fuelgauge tray mode")
+    ap.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS,
+                    help="poll interval in seconds (default: 300)")
+    args = ap.parse_args()
+    sys.exit(run_tray(interval=args.interval))
