@@ -15,7 +15,7 @@ to see how much quota is left. This tool gives you one glance.
 ## Example output
 
 ```
-Codex plus
+Codex
   5h         29%  [========>                     ]  reset 3h03m
   week       25%  [=======>                      ]  reset 5d17h
 
@@ -74,7 +74,7 @@ Notifications use Windows toast (`winotify`) or `plyer` elsewhere.
 
 | Environment | CLI | Tray | Notes |
 |---|---|---|---|
-| Windows 10/11 + ChatGPT Plus + Claude Pro | ✅ tested | ✅ tested | author's daily driver |
+| Windows 10/11 + ChatGPT Plus + Claude Max | ✅ tested | ✅ tested | author's daily driver |
 | Windows + Pro / Max | ✅ expected to work | ✅ expected to work | same headers & JSON-RPC |
 | macOS + Plus/Pro/Max | ⚠️ untested | ⚠️ untested | macOS Keychain path is coded but not verified — feedback wanted |
 | Linux + any | ⚠️ untested | ⚠️ untested — GNOME Shell no longer shows trays by default |
@@ -179,6 +179,6 @@ python ai_fuelgauge.py --tray   # 常駐系統匣
 **前提**：你要已經用 `codex login` 登入 Codex CLI、用 `claude` 登入 Claude Code CLI，這個工具才抓得到認證。
 
 **已知限制**：
-- 只實測過 Windows + ChatGPT Plus + Claude Pro 組合，其他平台/方案歡迎回報
+- 只實測過 Windows + ChatGPT Plus + Claude Max 組合，其他平台/方案歡迎回報
 - 每次查 Claude 會消耗約 1 token（小，有 30 秒快取保護）
 - 依賴的 API 都是非官方文件化的，未來有可能因為更新而壞掉

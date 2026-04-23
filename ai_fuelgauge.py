@@ -210,15 +210,18 @@ def probe_codex_fresh(debug: bool = False) -> dict | None:
     if not codex_bin:
         return {"error": "codex-not-in-path"}
 
+    popen_kwargs: dict = dict(
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=0,
+        shell=False,
+    )
+    # Suppress the console window that Windows creates for spawned processes.
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     try:
-        proc = subprocess.Popen(
-            [codex_bin, "app-server"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=0,
-            shell=False,
-        )
+        proc = subprocess.Popen([codex_bin, "app-server"], **popen_kwargs)
     except Exception as e:
         return {"error": f"spawn-failed: {e}"}
 
@@ -661,7 +664,7 @@ def main(argv: list[str]) -> int:
         stale_seconds = (int(time.time()) - int(as_of)) if as_of else None
         print_block(
             "Codex",
-            codex.get("plan"),
+            None,  # plan tier is tracked in JSON output but not shown in the display
             codex.get("primary"),
             codex.get("secondary"),
             use_color,
