@@ -13,6 +13,7 @@ Requires: pystray, Pillow (+ winotify on Windows, plyer elsewhere).
 """
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -68,6 +69,38 @@ DEFAULT_INTERVAL_SECONDS = 300
 THRESHOLD_PRIMARY_PCT = 80   # 5h window
 THRESHOLD_SECONDARY_PCT = 90  # weekly window
 HYSTERESIS_PCT = 10           # must drop this far below threshold before re-notifying
+
+# Cross-platform single-instance guard. Advisory lock on this file is held for
+# the lifetime of the process; the OS releases it on exit (including crash),
+# so there is no stale-pid cleanup to manage.
+_LOCK_FILE = Path.home() / ".cache" / "ai-fuelgauge-tray.lock"
+
+
+def _acquire_single_instance_lock() -> "int | None":
+    """Return an open fd that must be kept alive, or None if another tray holds the lock."""
+    try:
+        _LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    try:
+        fd = os.open(str(_LOCK_FILE), os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError:
+        return None
+    if sys.platform == "win32":
+        import msvcrt
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            os.close(fd)
+            return None
+    else:
+        import fcntl
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return None
+    return fd
 
 
 def _make_icon(max_pct: float, size: int = 64) -> "Image.Image":
@@ -256,7 +289,19 @@ class TrayApp:
 
 
 def run_tray(interval: int = DEFAULT_INTERVAL_SECONDS) -> int:
-    TrayApp(interval=interval).run()
+    lock_fd = _acquire_single_instance_lock()
+    if lock_fd is None:
+        # Another tray is already running. Silent exit — pythonw.exe has no
+        # visible stderr, and double-launching via usage-tray should just be a no-op.
+        sys.stderr.write("ai-fuelgauge tray is already running.\n")
+        return 0
+    try:
+        TrayApp(interval=interval).run()
+    finally:
+        try:
+            os.close(lock_fd)
+        except OSError:
+            pass
     return 0
 
 
