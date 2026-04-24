@@ -190,6 +190,40 @@ def read_codex_quota() -> dict | None:
 
 
 # --- Codex fresh probe (via official `codex app-server` JSON-RPC protocol) ---
+def _normalize_codex_window(w: "dict | None", now: int) -> dict:
+    """Normalize one primary/secondary window from a Codex JSON-RPC response.
+
+    Module-level (not nested) so tests can exercise it directly without
+    spawning `codex app-server`. Tolerant to malformed fields — a response
+    with a string `resetsAt`, missing keys, or the wrong shape should yield
+    a best-effort dict, never raise.
+    """
+    if not isinstance(w, dict):
+        return {}
+    # Fall back to snake_case `reset_at` only when the canonical `resetsAt` is
+    # absent OR explicitly None. Using `.get()` + `is None` instead of
+    # `w.get("resetsAt") or w.get("reset_at")` so that a legitimate `0` is
+    # preserved (it's falsy but not None).
+    reset_at = w.get("resetsAt")
+    if reset_at is None:
+        reset_at = w.get("reset_at")
+    reset_in = None
+    if reset_at is not None:
+        try:
+            reset_in = int(reset_at) - now
+        except (TypeError, ValueError):
+            # Non-numeric timestamp (e.g. ISO string from a future plan-tier
+            # response variant) — surface `reset_at` as-is and leave the
+            # countdown unknown rather than crashing the whole probe.
+            pass
+    return {
+        "used_percent": w.get("usedPercent"),
+        "window_minutes": w.get("windowDurationMins") or w.get("window_minutes"),
+        "reset_at": reset_at,
+        "reset_in_seconds": reset_in,
+    }
+
+
 def _find_codex_bin() -> str | None:
     """Locate the codex CLI binary."""
     for name in ("codex.cmd", "codex.exe", "codex"):
@@ -298,22 +332,11 @@ def probe_codex_fresh(debug: bool = False) -> dict | None:
 
     now = int(time.time())
 
-    def normalize(w):
-        if not isinstance(w, dict):
-            return {}
-        reset_at = w.get("resetsAt") or w.get("reset_at")
-        return {
-            "used_percent": w.get("usedPercent"),
-            "window_minutes": w.get("windowDurationMins") or w.get("window_minutes"),
-            "reset_at": reset_at,
-            "reset_in_seconds": (int(reset_at) - now) if reset_at else None,
-        }
-
     result.update({
         "plan": rl.get("planType") or "?",
         "as_of": now,
-        "primary": normalize(rl.get("primary") or {}),
-        "secondary": normalize(rl.get("secondary") or {}),
+        "primary": _normalize_codex_window(rl.get("primary") or {}, now),
+        "secondary": _normalize_codex_window(rl.get("secondary") or {}, now),
     })
 
     # Business / Enterprise plans use a credit model instead of (or alongside) windows.
@@ -341,8 +364,8 @@ def probe_codex_fresh(debug: bool = False) -> dict | None:
             continue
         if top_limit_id and lid == top_limit_id:
             continue
-        p = normalize(block.get("primary") or {})
-        s = normalize(block.get("secondary") or {})
+        p = _normalize_codex_window(block.get("primary") or {}, now)
+        s = _normalize_codex_window(block.get("secondary") or {}, now)
         if (p.get("used_percent") or 0) > 0 or (s.get("used_percent") or 0) > 0:
             additional.append({
                 "limit_id": lid,
@@ -704,7 +727,18 @@ def main(argv: list[str]) -> int:
         print(f"{C.red if use_color else ''}Codex error: {codex['error']}{C.reset if use_color else ''}\n")
     else:
         as_of = codex.get("as_of")
-        stale_seconds = (int(time.time()) - int(as_of)) if as_of else None
+        stale_seconds = None
+        # bool is a subclass of int in Python, so `isinstance(False, int)` is
+        # True. Exclude it explicitly — `int(False) == 0` would make a boolean
+        # sqlite cell render as a 1970-epoch "stale" marker, which is wrong.
+        if as_of is not None and not isinstance(as_of, bool):
+            try:
+                stale_seconds = int(time.time()) - int(as_of)
+            except (TypeError, ValueError):
+                # sqlite ts column can hold arbitrary content; don't let a
+                # non-numeric value crash the whole render after we've
+                # already printed the Codex header.
+                pass
         print_block(
             "Codex",
             None,  # plan tier is tracked in JSON output but not shown in the display
