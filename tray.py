@@ -76,6 +76,45 @@ HYSTERESIS_PCT = 10           # must drop this far below threshold before re-not
 _LOCK_FILE = Path.home() / ".cache" / "ai-fuelgauge-tray.lock"
 
 
+def _reexec_detached_on_windows(argv: "list[str]") -> bool:
+    """If launched via console `python.exe` on Windows, relaunch as `pythonw.exe`
+    detached from the parent console and return True (caller should exit).
+
+    Without this, closing the terminal that ran `python ai_fuelgauge.py --tray`
+    kills the tray because `python.exe` is a console-subsystem binary tied to
+    its parent console. `pythonw.exe` is a Windows-subsystem binary with no
+    console attachment, so it survives.
+
+    Skipped for: non-Windows, already-pythonw, frozen PyInstaller binaries,
+    `--no-detach` flag (handled by caller before invoking this).
+    """
+    if sys.platform != "win32":
+        return False
+    exe = Path(sys.executable)
+    if exe.name.lower() != "python.exe":
+        return False  # already pythonw, or frozen binary — no re-exec needed
+    pythonw = exe.with_name("pythonw.exe")
+    if not pythonw.exists():
+        return False  # some stripped installs lack pythonw; just run foreground
+    import subprocess
+    try:
+        subprocess.Popen(
+            [str(pythonw), *argv],
+            creationflags=(
+                subprocess.DETACHED_PROCESS
+                | subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.CREATE_NO_WINDOW
+            ),
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return False
+    return True
+
+
 def _acquire_single_instance_lock() -> "int | None":
     """Return an open fd that must be kept alive, or None if another tray holds the lock."""
     try:
@@ -288,7 +327,12 @@ class TrayApp:
         self.icon.run()  # blocks until _quit()
 
 
-def run_tray(interval: int = DEFAULT_INTERVAL_SECONDS) -> int:
+def run_tray(interval: int = DEFAULT_INTERVAL_SECONDS, detach: bool = True) -> int:
+    # Detach BEFORE acquiring the lock so the exiting parent never holds it.
+    # The detached pythonw child re-enters run_tray and reaches acquire next.
+    if detach and _reexec_detached_on_windows(sys.argv):
+        return 0
+
     lock_fd = _acquire_single_instance_lock()
     if lock_fd is None:
         # Another tray is already running. Silent exit — pythonw.exe has no
@@ -311,5 +355,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="ai-fuelgauge tray mode")
     ap.add_argument("--interval", type=afg.interval_seconds, default=DEFAULT_INTERVAL_SECONDS,
                     help="poll interval in seconds (default: 300, minimum: 1)")
+    ap.add_argument("--no-detach", action="store_true",
+                    help="(Windows) run in the foreground instead of auto-relaunching as pythonw detached — "
+                         "useful for debugging so stderr stays visible")
     args = ap.parse_args()
-    sys.exit(run_tray(interval=args.interval))
+    sys.exit(run_tray(interval=args.interval, detach=not args.no_detach))

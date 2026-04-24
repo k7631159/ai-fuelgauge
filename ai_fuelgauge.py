@@ -651,6 +651,9 @@ def main(argv: list[str]) -> int:
                     help="Run as system tray app (requires: pip install pystray Pillow winotify)")
     ap.add_argument("--interval", type=interval_seconds, default=300,
                     help="Tray poll interval in seconds (default: 300, minimum: 1)")
+    ap.add_argument("--no-detach", action="store_true",
+                    help="(Windows tray) stay in the foreground instead of auto-relaunching as pythonw "
+                         "detached — useful for debugging so stderr stays visible")
     args = ap.parse_args(argv)
 
     if args.tray:
@@ -660,7 +663,7 @@ def main(argv: list[str]) -> int:
             sys.stderr.write(f"tray mode requires extra deps: {e}\n")
             sys.stderr.write("Install with: pip install --user pystray Pillow winotify\n")
             return 2
-        return run_tray(interval=args.interval)
+        return run_tray(interval=args.interval, detach=not args.no_detach)
 
     use_color = (not args.no_color) and sys.stdout.isatty()
 
