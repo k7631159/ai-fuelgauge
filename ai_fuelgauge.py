@@ -841,7 +841,7 @@ def main(argv: list[str]) -> int:
             if http_error:
                 col = C.yellow if use_color else ""
                 rst = C.reset if use_color else ""
-                print(f"  {col}note: HTTP {status} from probe — figures above parsed from response headers{rst}")
+                print(f"  {col}note: HTTP {status} from probe — figures above parsed from response body{rst}")
         if args.debug:
             print("--- /api/oauth/usage response ---")
             body = claude.get("response_body")
