@@ -103,7 +103,9 @@ Notifications use Windows toast (`winotify`) or `plyer` elsewhere.
 | Any OS + Anthropic API-key (not subscription) | ❌ unsupported | — | API keys don't use consumer OAuth — different flow needed |
 
 If you try it on an untested combination, please open an issue with the output
-of `python ai_fuelgauge.py --debug --json`.
+of `python ai_fuelgauge.py --debug --json`. **Before posting**: `--debug` dumps
+the raw OAuth usage-endpoint response, which can include account-level fields —
+redact anything you don't want in a public issue.
 
 ## How it works
 
@@ -169,7 +171,8 @@ This is a personal hobby project, not a maintained product. If you open an issue
 or PR, I'll take a look, but I can't promise fast replies or merges. The most
 useful input:
 
-- Reports from macOS or Linux (attach `python ai_fuelgauge.py --debug --json` output)
+- Reports from macOS or Linux (attach `python ai_fuelgauge.py --debug --json`
+  output — **redact account / org fields before posting**)
 - Samples from Business / Enterprise / Team plan output (to improve rendering)
 
 ## License

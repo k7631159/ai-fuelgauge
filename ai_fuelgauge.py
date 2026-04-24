@@ -454,10 +454,10 @@ def _trigger_claude_auth_refresh() -> bool:
 def probe_claude_quota(debug: bool = False, _allow_refresh: bool = True) -> dict | None:
     """Read Claude subscription quota via the OAuth usage endpoint.
 
-    Uses `GET /api/oauth/usage` — still undocumented, but cleaner than parsing
-    the `anthropic-ratelimit-unified-*` headers off a `/v1/messages` probe:
-    structured JSON response AND does not consume an API token (the OAuth
-    endpoint is not billed against the model rate-limit budget).
+    Uses `GET /api/oauth/usage` — undocumented but returns structured JSON
+    (`five_hour` / `seven_day` blocks with utilization + reset timestamps)
+    and does not consume an API token (the OAuth endpoint is not billed
+    against the model rate-limit budget).
     """
     token = read_claude_token()
     if not token:
@@ -645,10 +645,10 @@ def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Show Codex + Claude remaining quota")
     ap.add_argument("--json", action="store_true", help="JSON output")
     ap.add_argument("--no-cache", action="store_true")
-    ap.add_argument("--debug", action="store_true", help="Include all response headers (debug Claude)")
+    ap.add_argument("--debug", action="store_true", help="Dump raw API responses for debugging")
     ap.add_argument("--no-color", action="store_true")
     ap.add_argument("--tray", action="store_true",
-                    help="Run as system tray app (requires: pip install pystray Pillow winotify)")
+                    help="Run as system tray app (install deps: pip install -r requirements-tray.txt)")
     ap.add_argument("--interval", type=interval_seconds, default=300,
                     help="Tray poll interval in seconds (default: 300, minimum: 1)")
     ap.add_argument("--no-detach", action="store_true",
@@ -660,8 +660,8 @@ def main(argv: list[str]) -> int:
         try:
             from tray import run_tray
         except ImportError as e:
-            sys.stderr.write(f"tray mode requires extra deps: {e}\n")
-            sys.stderr.write("Install with: pip install --user pystray Pillow winotify\n")
+            sys.stderr.write(f"tray mode requires extra dependencies: {e}\n")
+            sys.stderr.write("Install with: pip install --user -r requirements-tray.txt\n")
             return 2
         return run_tray(interval=args.interval, detach=not args.no_detach)
 
@@ -733,10 +733,10 @@ def main(argv: list[str]) -> int:
         http_error = bool(status) and status >= 400
         primary = claude.get("primary") or {}
         secondary = claude.get("secondary") or {}
-        # 429 (and some 4xx) still carry rate-limit headers, so probe_claude_quota
-        # may have parsed useful reset/utilization data even on an error response.
-        # Surface the quota block whenever anything was extracted; the HTTP status
-        # is then shown as a trailing note rather than suppressing the data.
+        # 429 (and some 4xx) may still include partial utilization data in the
+        # response body, so surface the quota block whenever anything was
+        # extracted; the HTTP status is then shown as a trailing note rather
+        # than suppressing the data.
         have_parsed_data = any(
             w.get("used_percent") is not None or w.get("reset_in_seconds") is not None
             for w in (primary, secondary)
@@ -758,7 +758,7 @@ def main(argv: list[str]) -> int:
                 primary,
                 secondary,
                 use_color,
-                no_data_hint="no unified rate-limit headers (API-key user or Team/Enterprise plan?)",
+                no_data_hint="no utilization data returned (API-key user or Team/Enterprise plan?)",
             )
             if http_error:
                 col = C.yellow if use_color else ""

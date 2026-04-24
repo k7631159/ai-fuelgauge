@@ -19,15 +19,11 @@ import threading
 import time
 from pathlib import Path
 
-try:
-    import pystray
-    from PIL import Image, ImageDraw
-except ImportError as e:
-    sys.stderr.write(
-        f"Missing tray dependency: {e}\n"
-        "Install with: pip install --user pystray Pillow\n"
-    )
-    sys.exit(1)
+# Optional runtime deps. Let ImportError propagate to the caller — the wrapper
+# in ai_fuelgauge.py surfaces a unified install message pointing at
+# requirements-tray.txt, which covers the platform-conditional winotify/plyer.
+import pystray
+from PIL import Image, ImageDraw
 
 # Platform-native notification backend.
 _NOTIFY = None
