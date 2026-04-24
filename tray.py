@@ -186,12 +186,68 @@ def _max_pct(snap: dict) -> float:
     return m
 
 
+def _classify_probe_error(d: "dict | None", provider: str) -> "tuple[str, str] | None":
+    r"""Map a probe result to (short_label, menu_text) when the result is a
+    known error state, else return None (let the caller treat as success).
+
+    - short_label — tight string shown in the tray title (<= ~8 chars), e.g.
+      `429`, `auth`, `login`, `offline`, `no-cli`.
+    - menu_text   — fuller human explanation shown in the right-click menu,
+      e.g. `Claude: auth expired — run \`claude\``.
+
+    Having labels distinct between error types addresses the UX gap where
+    every failure rendered identically as `Claude ?/?`, which users
+    (reasonably) read as "the tool is broken" rather than "server said 429".
+    """
+    if not isinstance(d, dict) or not d:
+        return "?", f"{provider}: no data"
+    err = d.get("error") or ""
+    status = d.get("status")
+
+    if provider == "Claude":
+        # Check status-based signals FIRST — a concrete HTTP code is more
+        # specific than a generic "probe-failed" string, so it wins when
+        # both are present (per Codex pre-commit review).
+        if status == 429:
+            return "429", "Claude: rate limited, retrying later"
+        if status == 401:
+            return "auth", "Claude: auth expired — run `claude`"
+        if isinstance(status, int) and status >= 400:
+            return str(status), f"Claude: HTTP {status}"
+        if err == "no-token-found":
+            return "login", "Claude: not logged in — run `claude`"
+        if err.startswith("probe-failed"):
+            return "offline", "Claude: offline / probe failed"
+    elif provider == "Codex":
+        if err == "codex-not-in-path":
+            return "no-cli", "Codex: codex CLI not found on PATH"
+        if err.startswith("spawn-failed"):
+            return "spawn", "Codex: codex CLI spawn failed"
+        if err == "no-response-from-app-server":
+            return "no-resp", "Codex: app-server not responding"
+        if err.startswith("jsonrpc-error"):
+            return "rpc-err", "Codex: JSON-RPC error from app-server"
+        if err == "empty-rateLimits":
+            return "empty", "Codex: empty rateLimits response"
+        if err.startswith("codex sqlite"):
+            return "db-err", "Codex: sqlite snapshot error"
+
+    # Unclassified error with an `error` key — surface it verbatim (truncated).
+    if err:
+        return "err", f"{provider}: {err[:40]}"
+
+    return None  # success — let caller render utilization numbers
+
+
 def _summary_line(snap: dict) -> str:
     parts = []
     for label, key in (("Codex", "codex"), ("Claude", "claude")):
         d = snap.get(key) or {}
-        if not d or (isinstance(d, dict) and d.get("error")):
-            parts.append(f"{label} ?")
+        # Classify known error states — surfaces failure reason (429, login,
+        # offline, ...) instead of the opaque bare "?/?".
+        err_info = _classify_probe_error(d, label)
+        if err_info is not None:
+            parts.append(f"{label} {err_info[0]}")
             continue
         # Route through _pct_or_none so NaN / non-numeric values show "?"
         # instead of "nan%".
@@ -235,20 +291,38 @@ class TrayApp:
         self._fetch_lock = threading.Lock()
 
     # --- menu item text getters (callables so they re-evaluate on menu open) ---
+    # When the probe is in a known error state (401 / 429 / offline / login /
+    # no-cli / ...) the 5h row carries the full explanation; the week row
+    # falls back to its normal "?" so the menu doesn't duplicate the same
+    # error text on two adjacent rows.
     def _codex_5h(self, _item):
-        p = _pct_or_none(self.snapshot.get("codex"), "primary")
+        d = self.snapshot.get("codex") or {}
+        err_info = _classify_probe_error(d, "Codex")
+        if err_info is not None:
+            return err_info[1]
+        p = _pct_or_none(d, "primary")
         return f"Codex 5h: {p:.0f}%" if p is not None else "Codex 5h: ?"
 
     def _codex_week(self, _item):
-        p = _pct_or_none(self.snapshot.get("codex"), "secondary")
+        d = self.snapshot.get("codex") or {}
+        if _classify_probe_error(d, "Codex") is not None:
+            return "Codex week: -"
+        p = _pct_or_none(d, "secondary")
         return f"Codex week: {p:.0f}%" if p is not None else "Codex week: ?"
 
     def _claude_5h(self, _item):
-        p = _pct_or_none(self.snapshot.get("claude"), "primary")
+        d = self.snapshot.get("claude") or {}
+        err_info = _classify_probe_error(d, "Claude")
+        if err_info is not None:
+            return err_info[1]
+        p = _pct_or_none(d, "primary")
         return f"Claude 5h: {p:.0f}%" if p is not None else "Claude 5h: ?"
 
     def _claude_week(self, _item):
-        p = _pct_or_none(self.snapshot.get("claude"), "secondary")
+        d = self.snapshot.get("claude") or {}
+        if _classify_probe_error(d, "Claude") is not None:
+            return "Claude week: -"
+        p = _pct_or_none(d, "secondary")
         return f"Claude week: {p:.0f}%" if p is not None else "Claude week: ?"
 
     # --- actions ---
