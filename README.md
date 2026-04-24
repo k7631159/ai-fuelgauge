@@ -2,6 +2,8 @@
 
 > Peek at your AI subscription fuel gauge — remaining quota for OpenAI Codex + Anthropic Claude, side by side.
 
+**English** · [繁體中文](./README.zh-TW.md)
+
 ## Disclaimer — please read before using
 
 This repository is source code for a **personal** AI-subscription quota viewer,
@@ -178,43 +180,3 @@ useful input:
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
----
-
-## 中文快速入門
-
-**重要聲明**（請先看）：
-
-本 repo 是一個**個人用途**的 AI 訂閱用量查看工具原始碼，公開是為了透明度和技術參考，
-並非作為產品發布。它使用**消費者 OAuth 行為和未公開的 API 端點**，隨時可能失效、改變、
-或與 OpenAI / Anthropic 的使用條款產生衝突。這不是任何一方官方、受支援、或被推薦的
-客戶端。若你選擇使用或修改此程式碼，請自行評估風險，並檢視自身帳號所適用的服務條款。
-**本專案刻意不發布到 PyPI**，只能從此 repo `git clone`。
-
-**這是什麼**：一次看兩個 AI 訂閱的剩餘配額（ChatGPT / Claude），CLI 或系統匣。
-
-**為什麼會做**：我同時付費訂閱 ChatGPT（用 Codex）和 Claude（用 Claude Code），
-要查各自的剩餘用量得在多個介面之間切換 —— 兩家的桌面 App、網頁儀表板、Claude Code CLI 的
-`/usage` 指令。我想要一個指令就全部看完。這是我自己寫來用的工具，原始碼放在這裡供參考。
-
-**安裝**：
-```bash
-git clone https://github.com/k7631159/ai-fuelgauge.git
-cd ai-fuelgauge
-pip install --user -r requirements-tray.txt   # 系統匣模式才需要
-```
-
-**常用指令**：
-```bash
-python ai_fuelgauge.py          # 看一次
-python ai_fuelgauge.py --tray   # 常駐系統匣
-```
-
-**前提**：你要已經用 `codex login` 登入 Codex CLI、用 `claude` 登入 Claude Code CLI，
-這個工具才抓得到認證。
-
-**已知限制**：
-- 只實測過 Windows + ChatGPT Plus + Claude Max 組合，其他平台/方案歡迎回報
-- Claude 用的 `/api/oauth/usage` 端點**未公開**（Anthropic 保留給自家原生 app 使用），
-  未來可能無預警失效
-- Codex `app-server` 協定標註為 **experimental**，未來可能改名
