@@ -264,14 +264,29 @@ class TrayApp:
     def _do_fetch(self):
         if not self._fetch_lock.acquire(blocking=False):
             return  # another fetch is in flight — skip to avoid overlap
+        # The whole fetch + post-processing runs under one try/except. The
+        # previous `try/else` placed `_apply_to_icon()` in the `else` branch
+        # OUTSIDE the try — any Pillow/pystray backend error raised from
+        # there would propagate out of the poller/refresh thread and, under
+        # the detached `pythonw.exe` tray, vanish into /dev/null. Result:
+        # tray shows stale data forever with no signal. Now all steps are
+        # caught so the fetch lock is always released cleanly AND the thread
+        # survives to try again on the next poll.
         try:
             snap = _snapshot()
-        except Exception as e:
-            sys.stderr.write(f"fetch failed: {e}\n")
-        else:
             self.snapshot = snap
             self._check_thresholds(snap)
             self._apply_to_icon()
+        except Exception as e:
+            # Wrap the stderr write too: under `pythonw.exe` sys.stderr can
+            # be None (no attached console), and calling .write on None would
+            # itself raise, propagate out of the thread, and kill the poller —
+            # defeating the whole point of the except.
+            try:
+                if sys.stderr is not None:
+                    sys.stderr.write(f"fetch failed: {e}\n")
+            except Exception:
+                pass
         finally:
             self._fetch_lock.release()
 
