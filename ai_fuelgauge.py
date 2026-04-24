@@ -304,8 +304,21 @@ def probe_codex_fresh(debug: bool = False) -> dict | None:
         proc.stdin.close()
     except Exception:
         pass
+    # Full shutdown: terminate → wait with bounded timeout → kill as last resort.
+    # Without the explicit wait(), terminate() signals the child but the parent
+    # returns before the child actually exits, leaving a Unix zombie entry and
+    # keeping the reader-thread pipe FDs open until eventual GC. Over a 24h
+    # tray-polling session (~288 spawns) that accumulates.
     try:
         proc.terminate()
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass  # truly stuck; nothing else we can safely do
     except Exception:
         pass
 
