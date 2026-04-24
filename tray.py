@@ -13,6 +13,7 @@ Requires: pystray, Pillow (+ winotify on Windows, plyer elsewhere).
 """
 from __future__ import annotations
 
+import math
 import os
 import sys
 import threading
@@ -171,11 +172,17 @@ def _max_pct(snap: dict) -> float:
         if isinstance(d, dict):
             for w in ("primary", "secondary"):
                 p = (d.get(w) or {}).get("used_percent")
-                if p is not None:
-                    try:
-                        m = max(m, float(p))
-                    except (TypeError, ValueError):
-                        pass
+                if p is None:
+                    continue
+                try:
+                    v = float(p)
+                except (TypeError, ValueError):
+                    continue
+                # NaN / inf propagate through max() unpredictably and would
+                # feed into _make_icon's threshold comparison; skip them.
+                if math.isnan(v) or math.isinf(v):
+                    continue
+                m = max(m, v)
     return m
 
 
@@ -186,8 +193,10 @@ def _summary_line(snap: dict) -> str:
         if not d or (isinstance(d, dict) and d.get("error")):
             parts.append(f"{label} ?")
             continue
-        p = (d.get("primary") or {}).get("used_percent")
-        s = (d.get("secondary") or {}).get("used_percent")
+        # Route through _pct_or_none so NaN / non-numeric values show "?"
+        # instead of "nan%".
+        p = _pct_or_none(d, "primary")
+        s = _pct_or_none(d, "secondary")
         p_str = f"{p:.0f}%" if p is not None else "?"
         s_str = f"{s:.0f}%" if s is not None else "?"
         parts.append(f"{label} {p_str}/{s_str}")
@@ -199,10 +208,17 @@ def _pct_or_none(d, window) -> "float | None":
         return None
     w = d.get(window) or {}
     p = w.get("used_percent")
+    if p is None:
+        return None
     try:
-        return float(p) if p is not None else None
+        v = float(p)
     except (TypeError, ValueError):
         return None
+    # NaN / inf would feed into menu formatting as "nan%" / "inf%" and into
+    # _max_pct's threshold math; surface as "no data" instead.
+    if math.isnan(v) or math.isinf(v):
+        return None
+    return v
 
 
 class TrayApp:

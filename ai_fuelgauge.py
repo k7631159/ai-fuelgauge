@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import queue
 import shutil
@@ -649,8 +650,18 @@ def print_block(
         nonlocal have_window_data
         if not d or d.get("used_percent") is None:
             return
+        try:
+            pct = float(d["used_percent"])
+        except (TypeError, ValueError):
+            # Non-numeric utilization from a hostile / evolved endpoint —
+            # treat as "no data" rather than crashing the render.
+            return
+        # json.loads accepts NaN/Infinity via parse_constant by default.
+        # Those propagate through max/min/round and blow up bar() at
+        # int(round(NaN)). Reject here before anything else reads `pct`.
+        if math.isnan(pct) or math.isinf(pct):
+            return
         have_window_data = True
-        pct = float(d["used_percent"])
         reset_s = d.get("reset_in_seconds")
         reset_str = fmt_duration(int(reset_s)) if reset_s is not None else "-"
         col = color_for(pct) if use_color else ""
