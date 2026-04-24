@@ -3,9 +3,9 @@
 Displays 5-hour and weekly rate-limit utilization for:
   * OpenAI Codex via `codex app-server` JSON-RPC `account/rateLimits/read`
     (works for Plus / Pro; Business / Enterprise shown as credit balance)
-  * Anthropic Claude via `anthropic-ratelimit-unified-*` response headers
-    probed through the Claude Code CLI's OAuth credentials
-    (works for Pro / Max; Team / Enterprise / API-key may lack unified headers)
+  * Anthropic Claude via `GET /api/oauth/usage` with the OAuth access token
+    stored by Claude Code (works for Pro / Max; Team / Enterprise may behave
+    differently; API-key users aren't supported — different auth flow)
 
 Invocation:
   python ai_fuelgauge.py                  Show quota (30s cache)
@@ -26,9 +26,8 @@ Requirements:
 
 Known caveats:
   * `codex app-server` is marked experimental — may break on Codex CLI updates.
-  * `anthropic-ratelimit-unified-*` headers are not in Anthropic's public docs,
-    but Claude Code itself depends on them.
-  * Each Claude probe consumes ~1 token (30s cache mitigates repeated calls).
+  * `/api/oauth/usage` is not in Anthropic's public docs and is reserved for
+    native Anthropic applications; may change without notice.
 
 License: MIT.
 """
