@@ -453,35 +453,36 @@ def _trigger_claude_auth_refresh() -> bool:
 
 
 def probe_claude_quota(debug: bool = False, _allow_refresh: bool = True) -> dict | None:
+    """Read Claude subscription quota via the OAuth usage endpoint.
+
+    Uses `GET /api/oauth/usage` — still undocumented, but cleaner than parsing
+    the `anthropic-ratelimit-unified-*` headers off a `/v1/messages` probe:
+    structured JSON response AND does not consume an API token (the OAuth
+    endpoint is not billed against the model rate-limit budget).
+    """
     token = read_claude_token()
     if not token:
         return {"error": "no-token-found"}
-    body = json.dumps(
-        {
-            "model": "claude-haiku-4-5-20251001",
-            "max_tokens": 1,
-            "messages": [{"role": "user", "content": "hi"}],
-        }
-    ).encode("utf-8")
     req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=body,
-        method="POST",
+        "https://api.anthropic.com/api/oauth/usage",
+        method="GET",
         headers={
             "Authorization": f"Bearer {token}",
-            "anthropic-version": "2023-06-01",
             "anthropic-beta": "oauth-2025-04-20",
-            "content-type": "application/json",
-            "user-agent": "usage-quota-probe/1.0",
+            "anthropic-version": "2023-06-01",
+            "user-agent": "ai-fuelgauge-probe/0.2",
         },
     )
     try:
         resp = urllib.request.urlopen(req, timeout=10)
         status = resp.status
-        headers = {k.lower(): v for k, v in resp.headers.items()}
+        raw_body = resp.read()
     except urllib.error.HTTPError as e:
         status = e.code
-        headers = {k.lower(): v for k, v in e.headers.items()} if e.headers else {}
+        try:
+            raw_body = e.read()
+        except Exception:
+            raw_body = b""
     except Exception as e:
         return {"error": f"probe-failed: {e}"}
 
@@ -495,81 +496,51 @@ def probe_claude_quota(debug: bool = False, _allow_refresh: bool = True) -> dict
                 return retry
 
     result: dict = {"status": status}
-    if debug:
-        result["headers_all"] = headers
-    rl_headers = {k: v for k, v in headers.items() if "ratelimit" in k or "anthropic" in k or "priority" in k}
-    result["rl_headers_raw"] = rl_headers
 
-    # Parse common Anthropic rate-limit header patterns.
-    # Try both subscription-unified and classic API-key headers.
+    try:
+        obj = json.loads(raw_body.decode("utf-8", errors="replace")) if raw_body else None
+    except json.JSONDecodeError:
+        obj = None
+
+    if debug:
+        result["response_body"] = obj if obj is not None else raw_body[:500].decode("utf-8", errors="replace")
+
+    if not isinstance(obj, dict):
+        return result
+
     now = int(time.time())
 
-    def parse_remaining_limit(prefix: str) -> dict | None:
-        """Given a prefix like 'anthropic-ratelimit-unified-5h-', compute used_percent.
-
-        Anthropic subscription returns `<prefix>utilization` as float 0..1.
-        Classic API keys return `<prefix>remaining` and `<prefix>limit`.
-        Both are handled.
-        """
-        rem = headers.get(prefix + "remaining")
-        lim = headers.get(prefix + "limit")
-        util = headers.get(prefix + "utilization")
-        reset = headers.get(prefix + "reset")
-        status = headers.get(prefix + "status")
-        used_pct = None
-        try:
-            if util is not None:
-                used_pct = float(util) * 100
-            elif rem is not None and lim is not None and float(lim) > 0:
-                used_pct = (1 - float(rem) / float(lim)) * 100
-        except ValueError:
-            pass
+    def _to_window(block: "dict | None", window_minutes: int) -> "dict | None":
+        if not isinstance(block, dict):
+            return None
+        util = block.get("utilization")
+        resets = block.get("resets_at")
+        reset_at = None
         reset_in = None
-        if reset:
+        if isinstance(resets, str):
             try:
-                reset_in = int(reset) - now
+                import datetime
+                dt = datetime.datetime.fromisoformat(resets.replace("Z", "+00:00"))
+                reset_at = int(dt.timestamp())
+                reset_in = reset_at - now
             except ValueError:
-                try:
-                    import datetime
-
-                    dt = datetime.datetime.fromisoformat(reset.replace("Z", "+00:00"))
-                    reset_in = int(dt.timestamp()) - now
-                except ValueError:
-                    pass
-        if used_pct is None and reset_in is None:
+                pass
+        if util is None and reset_in is None:
             return None
         return {
-            "used_percent": used_pct,
+            "window_minutes": window_minutes,
+            "used_percent": util,  # endpoint returns 0..100 already
+            "reset_at": reset_at,
             "reset_in_seconds": reset_in,
-            "status": status,
-            "raw_limit": lim,
-            "raw_remaining": rem,
-            "raw_utilization": util,
-            "raw_reset": reset,
         }
 
-    # Try several known prefix patterns
-    prefixes_5h = [
-        "anthropic-ratelimit-unified-5h-",
-        "anthropic-ratelimit-5h-",
-        "anthropic-priority-5h-",
-    ]
-    prefixes_week = [
-        "anthropic-ratelimit-unified-7d-",
-        "anthropic-ratelimit-7d-",
-        "anthropic-ratelimit-weekly-",
-        "anthropic-priority-weekly-",
-    ]
-    for p in prefixes_5h:
-        d = parse_remaining_limit(p)
-        if d:
-            result["primary"] = {"window_minutes": 300, **d, "source_prefix": p}
-            break
-    for p in prefixes_week:
-        d = parse_remaining_limit(p)
-        if d:
-            result["secondary"] = {"window_minutes": 10080, **d, "source_prefix": p}
-            break
+    primary = _to_window(obj.get("five_hour"), 300)
+    secondary = _to_window(obj.get("seven_day"), 10080)
+    if primary:
+        result["primary"] = primary
+    if secondary:
+        result["secondary"] = secondary
+
     return result
 
 
@@ -792,13 +763,12 @@ def main(argv: list[str]) -> int:
                 rst = C.reset if use_color else ""
                 print(f"  {col}note: HTTP {status} from probe — figures above parsed from response headers{rst}")
         if args.debug:
-            print("--- raw rate limit headers ---")
-            for k, v in (claude.get("rl_headers_raw") or {}).items():
-                print(f"  {k}: {v}")
-            if http_error and claude.get("headers_all"):
-                print("--- all response headers ---")
-                for k, v in claude["headers_all"].items():
-                    print(f"  {k}: {v}")
+            print("--- /api/oauth/usage response ---")
+            body = claude.get("response_body")
+            if isinstance(body, dict):
+                print(json.dumps(body, indent=2, default=str))
+            elif body:
+                print(body)
 
     if data.get("_from_cache"):
         print(f"{C.gray if use_color else ''}(cached, TTL {CACHE_TTL_SECONDS}s){C.reset if use_color else ''}")
