@@ -10,14 +10,27 @@ from ai_fuelgauge import probe_claude_quota
 
 
 class FakeResponse:
-    """Minimal fake of `urllib.request.urlopen`'s return value."""
+    """Minimal fake of `urllib.request.urlopen`'s return value.
+
+    Supports context-manager protocol so the M7 fix (`with urlopen(...)`)
+    works under test. The `closed` attribute records whether __exit__ ran,
+    which a M7 regression test asserts.
+    """
 
     def __init__(self, body, status=200):
         self._body = body.encode("utf-8") if isinstance(body, str) else body
         self.status = status
+        self.closed = False
 
     def read(self):
         return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.closed = True
+        return False
 
 
 def _mk_http_error(code, url="https://api.anthropic.com/api/oauth/usage"):
@@ -66,6 +79,42 @@ class TestProbeClaudeQuotaHappyPath:
         assert "response_body" in result
         assert isinstance(result["response_body"], dict)
         assert result["response_body"]["five_hour"]["utilization"] == 42.5
+
+    def test_response_closed_via_context_manager(self, valid_creds_file, valid_usage_json):
+        """Regression M7: the urlopen response was leaking file descriptors
+        because it was never explicitly closed. Now wrapped in `with` — this
+        test verifies __exit__ ran after probe completed."""
+        fake = FakeResponse(valid_usage_json)
+        with patch("ai_fuelgauge.urllib.request.urlopen", return_value=fake):
+            probe_claude_quota()
+
+        assert fake.closed is True, "urlopen response must be closed via context manager"
+
+    def test_http_error_body_is_closed(self, valid_creds_file):
+        """M7 extension (caught by Codex pre-commit review): HTTPError wraps
+        a file-like body too. Without close() we leak fds during 4xx storms —
+        exactly the 429 rate-limit scenario we're trying to survive."""
+        close_counter = {"calls": 0}
+
+        def fake_urlopen(req, timeout=None):
+            err = urllib.error.HTTPError(
+                req.full_url, 429, "Rate limited", {}, io.BytesIO(b"{}")
+            )
+            err.read = lambda: b"{}"
+            original_close = err.close
+
+            def tracked_close():
+                close_counter["calls"] += 1
+                original_close()
+
+            err.close = tracked_close
+            raise err
+
+        with patch("ai_fuelgauge.urllib.request.urlopen", side_effect=fake_urlopen):
+            # Disable auto-refresh recursion to keep this focused on close().
+            probe_claude_quota(_allow_refresh=False)
+
+        assert close_counter["calls"] == 1, "HTTPError body must be closed exactly once"
 
 
 class TestProbeClaudeQuotaErrors:

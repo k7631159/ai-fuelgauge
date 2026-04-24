@@ -509,15 +509,26 @@ def probe_claude_quota(debug: bool = False, _allow_refresh: bool = True) -> dict
         },
     )
     try:
-        resp = urllib.request.urlopen(req, timeout=10)
-        status = resp.status
-        raw_body = resp.read()
+        # Context manager ensures the underlying socket / fd is released
+        # promptly instead of waiting for GC. Matters under tray polling
+        # (every 5 min) and during transient retry storms.
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status = resp.status
+            raw_body = resp.read()
     except urllib.error.HTTPError as e:
         status = e.code
         try:
             raw_body = e.read()
         except Exception:
             raw_body = b""
+        finally:
+            # HTTPError wraps a file-like body the same way a normal response
+            # does — without close() it leaks fds during 4xx/5xx retry storms
+            # (e.g. rate-limit bursts from /api/oauth/usage).
+            try:
+                e.close()
+            except Exception:
+                pass
     except Exception as e:
         return {"error": f"probe-failed: {e}"}
 
@@ -587,7 +598,16 @@ def load_cache(ttl: int) -> dict | None:
         data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
     except Exception:
         return None
-    if int(time.time()) - data.get("_cached_at", 0) > ttl:
+    # Corrupt state that parses as valid JSON but the wrong top-level shape
+    # (e.g. a partial write that landed as `"null"`, `[]`, or a bare number)
+    # would make `data.get(...)` raise AttributeError — which the except above
+    # does NOT catch. Reject non-dict shapes explicitly so the cache self-heals.
+    if not isinstance(data, dict):
+        return None
+    cached_at = data.get("_cached_at", 0)
+    if not isinstance(cached_at, (int, float)):
+        return None
+    if int(time.time()) - cached_at > ttl:
         return None
     return data
 
