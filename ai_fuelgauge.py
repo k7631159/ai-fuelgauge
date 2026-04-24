@@ -61,6 +61,7 @@ CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
 CACHE_FILE = HOME / ".cache" / "usage-quota.json"
 CACHE_TTL_SECONDS = 30
 CODEX_APP_SERVER_TIMEOUT = 8  # seconds
+CLAUDE_AUTH_REFRESH_TIMEOUT = 10  # seconds for `claude auth status` invocation
 
 # --- ANSI colors (enabled on Windows 10+ cmd via os.system('') trick) ---
 if os.name == "nt":
@@ -417,7 +418,41 @@ def read_claude_token() -> str | None:
     return None
 
 
-def probe_claude_quota(debug: bool = False) -> dict | None:
+def _trigger_claude_auth_refresh() -> bool:
+    """Ask the official `claude` CLI to refresh its OAuth token, best-effort.
+
+    We don't implement OAuth refresh ourselves — that would mean writing back to
+    a credential file we don't own. Instead we invoke `claude auth status`, which
+    is a lightweight auth-only subcommand (no API token consumption). If the
+    token is expired, the CLI's startup auth path refreshes and rewrites
+    `.credentials.json`; if it's already valid, the call is a quick no-op.
+
+    Returns True if the subprocess exited 0, False on any failure. Note: a True
+    return does NOT guarantee the token was refreshed — `auth status` may be
+    passive in some versions, so callers still need a fallback for persistent 401.
+    """
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        return False
+    popen_kwargs: dict = dict(
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        res = subprocess.run(
+            [claude_bin, "auth", "status"],
+            timeout=CLAUDE_AUTH_REFRESH_TIMEOUT,
+            **popen_kwargs,
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+def probe_claude_quota(debug: bool = False, _allow_refresh: bool = True) -> dict | None:
     token = read_claude_token()
     if not token:
         return {"error": "no-token-found"}
@@ -449,6 +484,15 @@ def probe_claude_quota(debug: bool = False) -> dict | None:
         headers = {k.lower(): v for k, v in e.headers.items()} if e.headers else {}
     except Exception as e:
         return {"error": f"probe-failed: {e}"}
+
+    # 401 typically means the cached OAuth token has expired. Delegate refresh
+    # to the official `claude` CLI (it owns the credential file), then retry
+    # exactly once. `_allow_refresh=False` on the inner call prevents recursion.
+    if status == 401 and _allow_refresh:
+        if _trigger_claude_auth_refresh():
+            retry = probe_claude_quota(debug=debug, _allow_refresh=False)
+            if retry is not None:
+                return retry
 
     result: dict = {"status": status}
     if debug:
@@ -725,7 +769,15 @@ def main(argv: list[str]) -> int:
             for w in (primary, secondary)
         )
         if http_error and not have_parsed_data:
-            print(f"{C.red if use_color else ''}Claude probe HTTP {status}{C.reset if use_color else ''}")
+            col = C.red if use_color else ""
+            dim = C.dim if use_color else ""
+            rst = C.reset if use_color else ""
+            if status == 401:
+                print(f"{col}Claude probe HTTP 401 — auth token expired or invalid{rst}")
+                print(f"  {dim}Auto-refresh via `claude auth status` didn't restore access.{rst}")
+                print(f"  {dim}Run `claude` once to re-authenticate, then retry.{rst}")
+            else:
+                print(f"{col}Claude probe HTTP {status}{rst}")
         else:
             print_block(
                 "Claude",
