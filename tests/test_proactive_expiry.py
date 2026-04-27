@@ -196,3 +196,61 @@ class TestProactiveSkipsProbe:
         assert mock_urlopen.call_count == 1
         assert mock_refresh.call_count == 0
         assert result["status"] == 200
+
+    def test_reactive_401_retry_with_stale_refreshed_token_skips_network(self, valid_creds_file):
+        """Codex pre-push catch: the reactive 401 retry path uses
+        _allow_refresh=False, which previously also disabled the proactive
+        expiry guard. If `claude auth status` rewrote credentials with a
+        DIFFERENT but ALSO-EXPIRED token (clock skew / refresh bug), the
+        retry would still send the stale bearer to upstream — violating
+        the README's 'no network request if refresh doesn't produce a new
+        non-expired token' contract.
+
+        Now the expiry guard is unconditional (only the refresh ATTEMPT is
+        gated by _allow_refresh), so the retry detects the stale-but-
+        changed token and bails with auth-expired-no-refresh before any
+        second HTTP call."""
+        from tests.test_claude_probe import _mk_http_error
+        creds_path = valid_creds_file
+
+        # Start with a HEALTHY token so the first probe gets through to the
+        # network and can return 401.
+        creds_path.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "sk-ant-healthy-but-server-rejects",
+                "refreshToken": "sk-ant-refresh",
+                "expiresAt": 9999999999000,  # passes proactive guard
+            }
+        }))
+
+        urlopen_call_count = {"n": 0}
+        def fake_urlopen(req, timeout=None):
+            urlopen_call_count["n"] += 1
+            raise _mk_http_error(401)
+
+        # Refresh writes a NEW token but with a stale expiresAt — simulates
+        # a clock-skew / refresh-bug scenario. Token fingerprint changes,
+        # which the old code took as proof of recovery.
+        def stale_refresh():
+            creds_path.write_text(json.dumps({
+                "claudeAiOauth": {
+                    "accessToken": "sk-ant-DIFFERENT-but-also-stale",
+                    "refreshToken": "sk-ant-refresh",
+                    "expiresAt": 1000,  # already expired
+                }
+            }))
+            return True
+
+        with patch("ai_fuelgauge.urllib.request.urlopen", side_effect=fake_urlopen):
+            with patch("ai_fuelgauge._trigger_claude_auth_refresh", side_effect=stale_refresh):
+                result = probe_claude_quota()
+
+        # Critical: the retry must NOT have made a second network call.
+        assert urlopen_call_count["n"] == 1, (
+            "stale refreshed token must not be sent — expected exactly 1 "
+            "network call (the original), got "
+            f"{urlopen_call_count['n']}"
+        )
+        assert result["error"] == "auth-expired-no-refresh"
+        assert result["_proactive_skip"] is True
+        assert result["_refresh_attempted"] is True

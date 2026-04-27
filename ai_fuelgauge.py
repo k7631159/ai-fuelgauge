@@ -628,11 +628,26 @@ def probe_claude_quota(debug: bool = False, _allow_refresh: bool = True) -> dict
         return {"error": "no-token-found"}
     token = creds["access_token"]
 
-    if _is_token_expired_or_expiring(creds.get("expires_at_ms")) and _allow_refresh:
+    if _is_token_expired_or_expiring(creds.get("expires_at_ms")):
+        # Expiry guard is unconditional — even on the reactive 401 retry
+        # (where _allow_refresh=False), we MUST NOT send a known-stale
+        # bearer to the upstream. The README's contract is "no network
+        # request is made if refresh doesn't produce a new, non-expired
+        # token", and that has to hold across both the proactive entry
+        # and any internal retry.
         if _is_env_token_mode():
             # Env token can't be auto-refreshed — surface a clear local error
             # without hitting the network at all.
             return {"error": "env-token-expired", "_proactive_skip": True,
+                    "_expires_at_ms": creds.get("expires_at_ms")}
+        if not _allow_refresh:
+            # Reactive 401 retry path discovered the freshly-refreshed
+            # token is also stale. Don't try to refresh again (recursion
+            # guard); bail proactively.
+            return {"error": "auth-expired-no-refresh",
+                    "_proactive_skip": True,
+                    "_refresh_attempted": True,
+                    "_token_changed": False,
                     "_expires_at_ms": creds.get("expires_at_ms")}
         before_fp = _token_fingerprint(token)
         _trigger_claude_auth_refresh()
