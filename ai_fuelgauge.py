@@ -34,6 +34,7 @@ License: MIT.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -454,6 +455,24 @@ def read_claude_token() -> str | None:
     return None
 
 
+def _token_fingerprint(token: "str | None") -> "str | None":
+    """SHA256[:12] of a token. For trace/diff comparisons; never leaks the
+    token itself. Used to detect whether `claude auth status` actually
+    rewrote credentials, instead of trusting the subprocess returncode
+    (which can be 0 even when refresh silently failed)."""
+    if not token:
+        return None
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
+def _is_env_token_mode() -> bool:
+    """True iff the current token came from $CLAUDE_CODE_OAUTH_TOKEN.
+    Env tokens are static — `claude auth status` can't refresh them — so the
+    401 retry path should skip the spawn entirely and surface a clear
+    'replace your env var' message."""
+    return bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
+
+
 def _trigger_claude_auth_refresh() -> bool:
     """Ask the official `claude` CLI to refresh its OAuth token, best-effort.
 
@@ -499,6 +518,7 @@ def probe_claude_quota(debug: bool = False, _allow_refresh: bool = True) -> dict
     token = read_claude_token()
     if not token:
         return {"error": "no-token-found"}
+    request_token_fp = _token_fingerprint(token)
     req = urllib.request.Request(
         "https://api.anthropic.com/api/oauth/usage",
         method="GET",
@@ -533,16 +553,69 @@ def probe_claude_quota(debug: bool = False, _allow_refresh: bool = True) -> dict
     except Exception as e:
         return {"error": f"probe-failed: {e}"}
 
-    # 401 typically means the cached OAuth token has expired. Delegate refresh
-    # to the official `claude` CLI (it owns the credential file), then retry
-    # exactly once. `_allow_refresh=False` on the inner call prevents recursion.
+    # 401 → token-fingerprint-aware refresh path.
+    # Logic (see commit msg for rationale):
+    #   1. Re-read token. If it's already different from the one that 401'd,
+    #      another process refreshed for us — retry directly without spawning.
+    #   2. Skip spawn entirely in env-token mode (env tokens can't refresh).
+    #   3. Otherwise spawn `claude auth status`. After spawn, re-read token.
+    #      ONLY retry if fingerprint actually changed. Subprocess returncode
+    #      is informational; trusting it caused today's bug where refresh
+    #      "succeeded" (exit 0) but didn't rewrite credentials.
     if status == 401 and _allow_refresh:
-        if _trigger_claude_auth_refresh():
+        if _is_env_token_mode():
+            # Caller will see status=401 + this marker and surface a
+            # 'replace env var' message instead of 'run claude'.
+            return _claude_finalize(status, raw_body, debug, env_token_mode=True)
+
+        current_token = read_claude_token()
+        current_fp = _token_fingerprint(current_token)
+        if current_fp and current_fp != request_token_fp:
+            # Race A: another process already refreshed — retry directly.
             retry = probe_claude_quota(debug=debug, _allow_refresh=False)
             if retry is not None:
                 return retry
+        else:
+            refresh_returncode_ok = _trigger_claude_auth_refresh()
+            post_token = read_claude_token()
+            post_fp = _token_fingerprint(post_token)
+            if post_fp and post_fp != request_token_fp:
+                # Refresh actually rewrote credentials (whatever returncode said).
+                retry = probe_claude_quota(debug=debug, _allow_refresh=False)
+                if retry is not None:
+                    return retry
+            # Token unchanged → refresh truly failed. Mark so UI explains
+            # 'auto-refresh didn't help'.
+            return _claude_finalize(
+                status, raw_body, debug,
+                refresh_attempted=True,
+                refresh_subprocess_ok=refresh_returncode_ok,
+            )
 
+    return _claude_finalize(status, raw_body, debug)
+
+
+def _claude_finalize(status: int, raw_body: bytes, debug: bool,
+                     env_token_mode: bool = False,
+                     refresh_attempted: bool = False,
+                     refresh_subprocess_ok: "bool | None" = None) -> dict:
+    """Parse a /api/oauth/usage response body into the canonical result.
+
+    Optional markers describe local auth-state context that the caller may
+    use to render actionable error messages distinct from raw HTTP codes:
+      * env_token_mode=True   → 401 came from an env-var token that we
+                                cannot auto-refresh.
+      * refresh_attempted=True → we did spawn `claude auth status` but
+                                  the token fingerprint did not change,
+                                  so the refresh effectively failed.
+    """
     result: dict = {"status": status}
+    if env_token_mode:
+        result["_env_token_mode"] = True
+    if refresh_attempted:
+        result["_refresh_attempted"] = True
+        if refresh_subprocess_ok is not None:
+            result["_refresh_subprocess_ok"] = refresh_subprocess_ok
 
     try:
         obj = json.loads(raw_body.decode("utf-8", errors="replace")) if raw_body else None

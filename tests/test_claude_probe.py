@@ -142,9 +142,28 @@ class TestProbeClaudeQuotaErrors:
 
 
 class TestProbeClaudeQuotaAuthRefresh:
-    def test_401_triggers_refresh_then_retries(self, valid_creds_file, valid_usage_json):
-        """First urlopen raises 401; refresh succeeds; second urlopen returns data."""
+    """Refresh logic now uses token-fingerprint detection instead of trusting
+    subprocess returncode. Tests must simulate credential rewrites — that's
+    what `claude auth status` actually does on a real refresh."""
+
+    @staticmethod
+    def _rewrite_creds(creds_path, new_token):
+        creds_path.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": new_token,
+                "refreshToken": "sk-ant-test-refresh-xyz",
+                "expiresAt": 9999999999000,
+                "scopes": ["user:inference"],
+                "subscriptionType": "max",
+            }
+        }))
+
+    def test_401_with_refresh_rewriting_creds_then_retries(self, valid_creds_file, valid_usage_json):
+        """First urlopen raises 401; refresh rewrites creds (token fp changes);
+        second urlopen returns data. New contract: token actually changing
+        triggers retry, not subprocess exit==0."""
         call_count = {"n": 0}
+        creds_path = valid_creds_file
 
         def fake_urlopen(req, timeout=None):
             call_count["n"] += 1
@@ -152,9 +171,13 @@ class TestProbeClaudeQuotaAuthRefresh:
                 raise _mk_http_error(401)
             return FakeResponse(valid_usage_json)
 
+        def fake_refresh():
+            self._rewrite_creds(creds_path, "sk-ant-test-NEW-token")
+            return True
+
         with patch("ai_fuelgauge.urllib.request.urlopen", side_effect=fake_urlopen):
             with patch(
-                "ai_fuelgauge._trigger_claude_auth_refresh", return_value=True
+                "ai_fuelgauge._trigger_claude_auth_refresh", side_effect=fake_refresh
             ) as mock_refresh:
                 result = probe_claude_quota()
 
@@ -163,29 +186,94 @@ class TestProbeClaudeQuotaAuthRefresh:
         assert result["status"] == 200
         assert result["primary"]["used_percent"] == 42.5
 
-    def test_401_with_failed_refresh_returns_401(self, valid_creds_file):
-        """If refresh delegation returns False, do not retry; surface the 401."""
+    def test_401_subprocess_ok_but_token_unchanged_returns_401(self, valid_creds_file):
+        """New corner case: `claude auth status` exits 0 but doesn't rewrite
+        creds (passive check, network fail, etc.). Old code wrongly retried
+        with the same dead token; new code detects the unchanged fingerprint
+        and surfaces 401 + a marker explaining auto-refresh was tried."""
         def fake_urlopen(req, timeout=None):
             raise _mk_http_error(401)
 
         with patch("ai_fuelgauge.urllib.request.urlopen", side_effect=fake_urlopen):
-            with patch(
-                "ai_fuelgauge._trigger_claude_auth_refresh", return_value=False
-            ):
+            with patch("ai_fuelgauge._trigger_claude_auth_refresh", return_value=True):
                 result = probe_claude_quota()
 
         assert result["status"] == 401
+        assert result.get("_refresh_attempted") is True
+        assert result.get("_refresh_subprocess_ok") is True
+
+    def test_401_with_failed_refresh_returns_401(self, valid_creds_file):
+        """Refresh subprocess returns False AND token didn't change."""
+        def fake_urlopen(req, timeout=None):
+            raise _mk_http_error(401)
+
+        with patch("ai_fuelgauge.urllib.request.urlopen", side_effect=fake_urlopen):
+            with patch("ai_fuelgauge._trigger_claude_auth_refresh", return_value=False):
+                result = probe_claude_quota()
+
+        assert result["status"] == 401
+        assert result.get("_refresh_attempted") is True
+        assert result.get("_refresh_subprocess_ok") is False
+
+    def test_401_skip_spawn_when_other_process_already_refreshed(self, valid_creds_file, valid_usage_json):
+        """Race A: another process refreshed credentials between our request
+        being sent and the 401 coming back. We re-read the token, see it
+        already changed, retry directly WITHOUT spawning `claude auth status`."""
+        call_count = {"n": 0}
+        creds_path = valid_creds_file
+
+        def fake_urlopen(req, timeout=None):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # Simulate other process having refreshed AFTER our request
+                # was sent but BEFORE we processed the 401.
+                self._rewrite_creds(creds_path, "sk-ant-test-RACE-WIN-token")
+                raise _mk_http_error(401)
+            return FakeResponse(valid_usage_json)
+
+        with patch("ai_fuelgauge.urllib.request.urlopen", side_effect=fake_urlopen):
+            with patch("ai_fuelgauge._trigger_claude_auth_refresh") as mock_refresh:
+                result = probe_claude_quota()
+
+        # Critical: refresh subprocess must NOT have been spawned.
+        assert mock_refresh.call_count == 0
+        assert call_count["n"] == 2
+        assert result["status"] == 200
+
+    def test_401_with_env_token_skips_refresh(self, valid_creds_file, monkeypatch):
+        """When token came from $CLAUDE_CODE_OAUTH_TOKEN, refresh is impossible
+        (env vars are static), so the spawn must be skipped. Result carries
+        `_env_token_mode` so UI can give the right 'replace your env var'
+        message instead of the generic 'run claude' hint."""
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-env-token-xyz")
+
+        def fake_urlopen(req, timeout=None):
+            raise _mk_http_error(401)
+
+        with patch("ai_fuelgauge.urllib.request.urlopen", side_effect=fake_urlopen):
+            with patch("ai_fuelgauge._trigger_claude_auth_refresh") as mock_refresh:
+                result = probe_claude_quota()
+
+        assert mock_refresh.call_count == 0
+        assert result["status"] == 401
+        assert result.get("_env_token_mode") is True
 
     def test_401_refresh_does_not_recurse(self, valid_creds_file):
-        """The recursion guard (_allow_refresh=False on retry) must cap refresh at 1."""
+        """Recursion guard: even if refresh changes token to one that ALSO
+        gets 401, we only retry once — never spawn refresh on the retry."""
         refresh_count = {"n": 0}
+        creds_path = valid_creds_file
 
         def fake_urlopen(req, timeout=None):
             raise _mk_http_error(401)
 
         def counting_refresh():
             refresh_count["n"] += 1
-            return True  # pretend refresh always succeeds — retry should still cap
+            # Each refresh actually changes the token (so retry is triggered),
+            # but the new token also 401s. The recursion guard must still
+            # cap total refresh attempts at 1.
+            self._rewrite_creds(creds_path, f"sk-ant-test-NEW-{refresh_count['n']}")
+            return True
 
         with patch("ai_fuelgauge.urllib.request.urlopen", side_effect=fake_urlopen):
             with patch(
