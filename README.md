@@ -69,7 +69,8 @@ is technically possible but not recommended for casual use.
 ```bash
 python ai_fuelgauge.py                 # plain output
 python ai_fuelgauge.py --json          # machine-readable JSON
-python ai_fuelgauge.py --no-cache      # force fresh probe
+python ai_fuelgauge.py --no-cache      # bypass result cache (auth safety
+                                       # check may still skip the network)
 python ai_fuelgauge.py --debug         # dump raw API responses
 ```
 
@@ -89,6 +90,11 @@ option. A desktop notification fires when:
 
 - 5-hour window hits 80 %
 - Weekly window hits 90 %
+
+Claude auth failures show distinct tray labels — `auth` (refresh failed,
+run `claude`), `expired` (proactive skip, run `claude`), or `envtok`
+(replace `$CLAUDE_CODE_OAUTH_TOKEN`) — with menu text explaining the
+fix without you having to dig into logs.
 
 Notifications use Windows toast (`winotify`) or `plyer` elsewhere.
 
@@ -126,11 +132,18 @@ team alongside the CLI, it's more stable than reverse-engineering HTTP endpoints
 
 ### Claude side — undocumented OAuth endpoint
 
-Makes a single `GET https://api.anthropic.com/api/oauth/usage` using the OAuth
-access token that Claude Code stores at `~/.claude/.credentials.json`, with
-the header `anthropic-beta: oauth-2025-04-20`. The endpoint returns structured
-JSON with `five_hour` and `seven_day` blocks (utilization percent +
-reset timestamps), which the tool maps onto the 5h / weekly bars.
+Reads Claude Code OAuth credentials and checks the local `expiresAt` before
+probing. If the token is healthy, calls
+`GET https://api.anthropic.com/api/oauth/usage` with the header
+`anthropic-beta: oauth-2025-04-20`; the endpoint returns structured JSON with
+`five_hour` and `seven_day` blocks (utilization + reset timestamps) that the
+tool maps onto the 5h / weekly bars.
+
+If the token is expired or within 60 s of expiry, the tool asks the local
+`claude` CLI (`claude auth status`) to refresh it first. If refresh does not
+produce a new, non-expired token, **no network request is made** and a local
+auth error is shown — this protects shared upstream limits from being hit
+with a known-bad bearer.
 
 The endpoint is **not documented in Anthropic's public API docs** and is
 reserved for native Anthropic applications. This tool consumes it for
@@ -149,7 +162,9 @@ endpoint is not billed against the model rate-limit budget.
 
 A 30-second cache (`~/.cache/usage-quota.json`) skips re-running the Codex
 `app-server` cold-start (~4 s per spawn) on back-to-back `usage` calls, and is
-a courtesy to the OAuth usage endpoint. Use `--no-cache` to force a fresh fetch.
+a courtesy to the OAuth usage endpoint. Use `--no-cache` to bypass this result
+cache; Claude's auth safety check may still skip the network when the local
+token is expired and can't be refreshed.
 
 ## Known limitations
 
@@ -159,12 +174,24 @@ a courtesy to the OAuth usage endpoint. Use `--no-cache` to force a fresh fetch.
   could rename the method.
 - Linux tray support depends on your desktop environment. Upstream GNOME no
   longer shows system-tray icons; try an extension like *AppIndicator Support*.
+- `$CLAUDE_CODE_OAUTH_TOKEN` is treated as a static token and cannot be
+  auto-refreshed; rotate it manually (or unset it to fall back to the
+  credentials file) when it expires.
+- Claude auto-refresh requires the `claude` CLI on `PATH` and able to
+  rewrite Claude Code credentials. Without it, an expired token surfaces
+  as a 401 with a "run `claude`" hint instead of being recovered silently.
+- The proactive expiry check only fires when Claude credentials expose a
+  parseable `expiresAt`. Other sources (env var, macOS keychain bare token)
+  fall back to reactive 401 handling.
 
 ## Requirements
 
 - Python **3.7+**
 - OpenAI **Codex CLI** installed and logged in (`codex login`) — for Codex quota
-- **Claude Code** CLI installed and logged in (`claude` then `/login`) — for Claude quota
+- **Claude Code** CLI installed, logged in, and available on `PATH` (`claude`,
+  then `/login`) — required for Claude quota *and* auto-refresh of expired tokens
+- If using `$CLAUDE_CODE_OAUTH_TOKEN` instead of the credentials file, you must
+  rotate that token yourself; the tool cannot refresh env-var tokens
 - For tray mode only: `pystray`, `Pillow`, and one of `winotify` (Windows) or `plyer`
 
 ## Contributing

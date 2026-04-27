@@ -63,7 +63,8 @@ pip install --user -r requirements-tray.txt
 ```bash
 python ai_fuelgauge.py                 # 純文字輸出
 python ai_fuelgauge.py --json          # 機器可讀的 JSON
-python ai_fuelgauge.py --no-cache      # 強制重新 probe
+python ai_fuelgauge.py --no-cache      # 略過結果 cache（auth 安全檢查仍可能
+                                       # 跳過網路請求）
 python ai_fuelgauge.py --debug         # 把原始 API 回應全部 dump 出來
 ```
 
@@ -82,6 +83,10 @@ Tray 圖示會顯示一個彩色圓點，反映你兩個訂閱中使用率最高
 
 - 5 小時 window 達到 80 %
 - 每週 window 達到 90 %
+
+Claude 認證失敗時 tray 會顯示不同 label —— `auth`（refresh 失敗，請跑 `claude`）、
+`expired`（proactive 主動跳過，請跑 `claude`）、`envtok`（請更換
+`$CLAUDE_CODE_OAUTH_TOKEN`）—— 並在右鍵選單給你具體該怎麼修，不用翻 log。
 
 通知在 Windows 用 `winotify`，其他平台用 `plyer`。
 
@@ -118,11 +123,16 @@ Tray 圖示會顯示一個彩色圓點，反映你兩個訂閱中使用率最高
 
 ### Claude 這邊 —— 未公開的 OAuth endpoint
 
-對 `GET https://api.anthropic.com/api/oauth/usage` 打一次，用的是 Claude Code
-存在 `~/.claude/.credentials.json` 的 OAuth access token，搭配 header
-`anthropic-beta: oauth-2025-04-20`。這個 endpoint 會回一個結構化 JSON，
+呼叫前先讀取 Claude Code 的 OAuth credentials，在本地檢查 `expiresAt`。
+如果 token 還健康，就對 `GET https://api.anthropic.com/api/oauth/usage` 打一次，
+搭配 header `anthropic-beta: oauth-2025-04-20`；endpoint 會回一個結構化 JSON，
 包含 `five_hour` 和 `seven_day` 兩個區塊（使用率百分比 + reset 時間戳），
 工具再把它對應到 5h / 每週的進度條上。
+
+如果 token 已過期、或距離過期不到 60 秒，工具會先請本機的 `claude` CLI
+（`claude auth status`）幫忙 refresh。如果 refresh 後仍然拿不到一個有效的新 token，
+**就完全不會發出網路請求**，直接顯示本地的認證錯誤 —— 這是為了避免帶著已知壞掉
+的 bearer 去打 upstream，造成共用流量被牽連。
 
 這個 endpoint **沒有出現在 Anthropic 的公開 API 文件**，是保留給 Anthropic
 自家原生 application 的。本工具只為了**個人使用**去呼叫它；這不是官方認可的
@@ -140,7 +150,8 @@ Tray 圖示會顯示一個彩色圓點，反映你兩個訂閱中使用率最高
 
 有一個 30 秒的 cache（`~/.cache/usage-quota.json`），避免連續打 `usage` 時每次
 都要重新經歷 Codex `app-server` 的冷啟動（每次 spawn 大約 4 秒），同時也算是
-對 OAuth usage endpoint 的一點禮貌。要強制重抓的話用 `--no-cache`。
+對 OAuth usage endpoint 的一點禮貌。`--no-cache` 用來略過這層結果 cache；不過
+如果 Claude 的本地 token 過期且無法 refresh，auth 安全檢查仍可能跳過網路請求。
 
 ## 已知限制
 
@@ -150,12 +161,23 @@ Tray 圖示會顯示一個彩色圓點，反映你兩個訂閱中使用率最高
   method 改名。
 - Linux 的 tray 支援要看你用哪個桌面環境。上游 GNOME 已經不顯示 system tray
   圖示了；可以試試 *AppIndicator Support* 之類的擴充套件。
+- `$CLAUDE_CODE_OAUTH_TOKEN` 被視為靜態 token，**無法自動 refresh**；過期時請手動
+  輪替（或 unset 它，讓工具回去讀 credentials 檔案）。
+- Claude 的自動 refresh 需要 `claude` CLI 在 `PATH` 上、且能改寫 Claude Code
+  credentials。沒有的話，過期 token 會以 401 + 「請跑 `claude`」提示呈現，不會被
+  自動修復。
+- Proactive 過期檢查只在 Claude credentials 帶有可解析的 `expiresAt` 時才會運作。
+  其他來源（環境變數、macOS Keychain 純 token 字串）會 fallback 到反應式 401
+  處理流程。
 
 ## 環境需求
 
 - Python **3.7+**
 - 已安裝並登入 OpenAI **Codex CLI**（`codex login`）—— 用來抓 Codex 配額
-- 已安裝並登入 **Claude Code** CLI（`claude` 然後 `/login`）—— 用來抓 Claude 配額
+- 已安裝、已登入、且在 `PATH` 上的 **Claude Code** CLI（`claude` 然後 `/login`）
+  —— 抓 Claude 配額**和**自動 refresh 過期 token 都需要
+- 如果你用 `$CLAUDE_CODE_OAUTH_TOKEN` 而不是 credentials 檔案，過期時請自行輪替；
+  本工具無法 refresh 環境變數型 token
 - 只有 tray 模式才需要：`pystray`、`Pillow`，再加上 `winotify`（Windows）或 `plyer` 其中一個
 
 ## 貢獻
