@@ -63,6 +63,11 @@ CACHE_FILE = HOME / ".cache" / "usage-quota.json"
 CACHE_TTL_SECONDS = 30
 CODEX_APP_SERVER_TIMEOUT = 8  # seconds
 CLAUDE_AUTH_REFRESH_TIMEOUT = 10  # seconds for `claude auth status` invocation
+# Treat the token as expired if it expires within this many seconds. Avoids
+# the race where a token passes the local check, then expires mid-flight
+# and the server returns 401. Codex suggested 60s; bigger means more
+# proactive refreshes, smaller means more in-flight expirations.
+CLAUDE_TOKEN_EXPIRY_BUFFER_SECONDS = 60
 
 # --- ANSI colors (enabled on Windows 10+ cmd via os.system('') trick) ---
 if os.name == "nt":
@@ -410,6 +415,26 @@ def _extract_token_from_cred_json(data) -> str | None:
     return None
 
 
+def _extract_expires_at_from_cred_json(data) -> "int | None":
+    """Find Claude Code's `expiresAt` (Unix epoch milliseconds) in the
+    credentials JSON. Returns None when absent or non-numeric — callers
+    should treat that as 'unknown expiry, fall through to reactive 401
+    handling' rather than 'expired'.
+    """
+    for path in (("claudeAiOauth", "expiresAt"), ("expiresAt",), ("expires_at",)):
+        cur = data
+        ok = True
+        for k in path:
+            if isinstance(cur, dict) and k in cur:
+                cur = cur[k]
+            else:
+                ok = False
+                break
+        if ok and isinstance(cur, (int, float)):
+            return int(cur)
+    return None
+
+
 def read_claude_token() -> str | None:
     """Return Claude OAuth access token.
 
@@ -473,6 +498,83 @@ def _is_env_token_mode() -> bool:
     return bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
 
 
+def read_claude_creds_with_meta() -> "dict | None":
+    """Return current Claude credentials as `{access_token, expires_at_ms, source}`.
+
+    Resolution order matches `read_claude_token`:
+      1. $CLAUDE_CODE_OAUTH_TOKEN env var (no expires_at_ms — env tokens
+         are static and cannot be auto-refreshed)
+      2. credentials.json (file mode — has expires_at_ms when the field
+         is well-formed)
+      3. macOS Keychain ("Claude Code-credentials")
+
+    `expires_at_ms` is None when:
+      - source is env (no metadata)
+      - keychain returned a bare token string (not JSON)
+      - the JSON was malformed or the field was missing/non-numeric
+
+    Callers use the metadata for the proactive expiry check; missing
+    metadata means "fall through to reactive 401 handling" rather than
+    "assume expired" — the latter would needlessly skip probes for any
+    keychain-only setup that doesn't expose expiry info.
+    """
+    env_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if env_token:
+        return {"access_token": env_token, "expires_at_ms": None, "source": "env"}
+
+    if CLAUDE_CREDS.exists():
+        try:
+            data = json.loads(CLAUDE_CREDS.read_text(encoding="utf-8"))
+            tok = _extract_token_from_cred_json(data)
+            if tok:
+                return {
+                    "access_token": tok,
+                    "expires_at_ms": _extract_expires_at_from_cred_json(data),
+                    "source": "file",
+                }
+        except Exception:
+            pass
+
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(
+                ["security", "find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-w"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                raw = out.stdout.strip()
+                try:
+                    data = json.loads(raw)
+                    tok = _extract_token_from_cred_json(data)
+                    if tok:
+                        return {
+                            "access_token": tok,
+                            "expires_at_ms": _extract_expires_at_from_cred_json(data),
+                            "source": "keychain",
+                        }
+                except json.JSONDecodeError:
+                    if raw.startswith("sk-ant-"):
+                        return {"access_token": raw, "expires_at_ms": None, "source": "keychain-bare"}
+        except Exception:
+            pass
+
+    return None
+
+
+def _is_token_expired_or_expiring(expires_at_ms: "int | None",
+                                   buffer_seconds: int = CLAUDE_TOKEN_EXPIRY_BUFFER_SECONDS) -> bool:
+    """True iff expires_at_ms is in the past or within `buffer_seconds`.
+
+    Returns False when expires_at_ms is None — that means we have no expiry
+    info (env token, keychain-bare, malformed JSON). The reactive 401 path
+    is the safety net for those cases.
+    """
+    if expires_at_ms is None:
+        return False
+    now_ms = int(time.time() * 1000)
+    return expires_at_ms <= now_ms + (buffer_seconds * 1000)
+
+
 def _trigger_claude_auth_refresh() -> bool:
     """Ask the official `claude` CLI to refresh its OAuth token, best-effort.
 
@@ -515,9 +617,43 @@ def probe_claude_quota(debug: bool = False, _allow_refresh: bool = True) -> dict
     and does not consume an API token (the OAuth endpoint is not billed
     against the model rate-limit budget).
     """
-    token = read_claude_token()
-    if not token:
+    # Proactive token expiry check — root-cause defense, not a backstop.
+    # Today's incident showed CF treats expired-bearer requests as abuse and
+    # locks the IP for ~30 minutes. The cheapest way to avoid that is to
+    # never send an expired bearer in the first place: read expiresAt from
+    # credentials.json locally, refresh proactively if expired, and bail
+    # out without a network call if refresh truly fails.
+    creds = read_claude_creds_with_meta()
+    if creds is None:
         return {"error": "no-token-found"}
+    token = creds["access_token"]
+
+    if _is_token_expired_or_expiring(creds.get("expires_at_ms")) and _allow_refresh:
+        if _is_env_token_mode():
+            # Env token can't be auto-refreshed — surface a clear local error
+            # without hitting the network at all.
+            return {"error": "env-token-expired", "_proactive_skip": True,
+                    "_expires_at_ms": creds.get("expires_at_ms")}
+        before_fp = _token_fingerprint(token)
+        _trigger_claude_auth_refresh()
+        creds = read_claude_creds_with_meta() or creds
+        token = creds["access_token"]
+        after_fp = _token_fingerprint(token)
+        # Refresh worked iff fingerprint changed AND new token is no longer
+        # in the expiry window. Either alone isn't sufficient — a refreshed
+        # token that's STILL stale (server clock skew? bug?) shouldn't be
+        # used.
+        token_changed = bool(after_fp) and after_fp != before_fp
+        still_expired = _is_token_expired_or_expiring(creds.get("expires_at_ms"))
+        if not token_changed or still_expired:
+            return {
+                "error": "auth-expired-no-refresh",
+                "_proactive_skip": True,
+                "_refresh_attempted": True,
+                "_token_changed": token_changed,
+                "_expires_at_ms": creds.get("expires_at_ms"),
+            }
+
     request_token_fp = _token_fingerprint(token)
     req = urllib.request.Request(
         "https://api.anthropic.com/api/oauth/usage",
