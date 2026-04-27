@@ -40,6 +40,40 @@ class TestClassifyClaudeErrors:
         assert label == "auth"
         assert "auth" in msg.lower() or "expired" in msg.lower()
 
+    def test_proactive_token_expired_label(self):
+        """Proactive skip (no HTTP call): use `expired` label so user knows
+        to run `claude`, not wait."""
+        label, msg = _classify_probe_error(
+            {"error": "auth-expired-no-refresh"}, "Claude"
+        )
+        assert label == "expired"
+        assert "claude" in msg.lower()
+
+    def test_env_token_expired_label(self):
+        label, msg = _classify_probe_error(
+            {"error": "env-token-expired"}, "Claude"
+        )
+        assert label == "envtok"
+        assert "env" in msg.lower() or "$claude" in msg.lower()
+
+    def test_401_with_env_token_mode_marker(self):
+        """Reactive 401 when env-token mode: same `envtok` label so the
+        message points at the env var, not at running `claude`."""
+        label, msg = _classify_probe_error(
+            {"status": 401, "_env_token_mode": True}, "Claude"
+        )
+        assert label == "envtok"
+        assert "env" in msg.lower() or "$claude" in msg.lower()
+
+    def test_401_with_refresh_attempted_marker(self):
+        """Reactive 401 after auto-refresh tried but didn't help — surface
+        a more specific 'auto-refresh failed' explanation."""
+        label, msg = _classify_probe_error(
+            {"status": 401, "_refresh_attempted": True}, "Claude"
+        )
+        assert label == "auth"
+        assert "auto-refresh" in msg.lower() or "refresh" in msg.lower()
+
     def test_generic_4xx(self):
         label, msg = _classify_probe_error({"status": 403}, "Claude")
         assert label == "403"

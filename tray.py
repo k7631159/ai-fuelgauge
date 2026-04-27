@@ -205,12 +205,24 @@ def _classify_probe_error(d: "dict | None", provider: str) -> "tuple[str, str] |
     status = d.get("status")
 
     if provider == "Claude":
-        # Check status-based signals FIRST — a concrete HTTP code is more
+        # Proactive auth-state errors first — they carry actionable user
+        # context without needing to look at HTTP status (no probe was made).
+        if err == "env-token-expired":
+            return "envtok", "Claude: $CLAUDE_CODE_OAUTH_TOKEN expired — replace it"
+        if err == "auth-expired-no-refresh":
+            return "expired", "Claude: token expired — run `claude` to re-login"
+        # Check status-based signals next — a concrete HTTP code is more
         # specific than a generic "probe-failed" string, so it wins when
         # both are present (per Codex pre-commit review).
         if status == 429:
             return "429", "Claude: rate limited, retrying later"
         if status == 401:
+            # Refined 401 messaging: distinguish env-token (can't refresh)
+            # from refresh-attempted-but-failed (run `claude` interactively).
+            if d.get("_env_token_mode"):
+                return "envtok", "Claude: $CLAUDE_CODE_OAUTH_TOKEN expired — replace it"
+            if d.get("_refresh_attempted"):
+                return "auth", "Claude: auto-refresh failed — run `claude`"
             return "auth", "Claude: auth expired — run `claude`"
         if isinstance(status, int) and status >= 400:
             return str(status), f"Claude: HTTP {status}"

@@ -901,6 +901,90 @@ def print_block(
     print()
 
 
+def _render_claude(claude: dict, use_color: bool, debug: bool) -> None:
+    """Render the Claude block with one branch per error state.
+
+    Distinguishes the proactive auth-state errors (no network call was made,
+    so they get 'safe to ignore + how to fix' messaging) from reactive HTTP
+    statuses (real server response). The 401 path further splits by why the
+    auto-refresh path didn't help so users know whether to run `claude` or
+    replace an env var.
+    """
+    err = claude.get("error")
+    if err in ("auth-expired-no-refresh", "env-token-expired"):
+        col = C.red if use_color else ""
+        dim = C.dim if use_color else ""
+        rst = C.reset if use_color else ""
+        if err == "env-token-expired":
+            print(f"{col}Claude: $CLAUDE_CODE_OAUTH_TOKEN appears expired{rst}")
+            print(f"  {dim}Env tokens can't be auto-refreshed. Replace the env var with a fresh token,{rst}")
+            print(f"  {dim}or unset it to fall back to ~/.claude/.credentials.json + `claude` login.{rst}")
+        else:
+            print(f"{col}Claude: token expired and auto-refresh didn't help{rst}")
+            print(f"  {dim}No HTTP request was made (proactive skip — protects against rate-limit triggers).{rst}")
+            print(f"  {dim}Run `claude` once to re-authenticate, then retry `usage`.{rst}")
+        return
+    if err:
+        # no-token-found, probe-failed: …, or anything unclassified.
+        print(f"{C.red if use_color else ''}Claude error: {err}{C.reset if use_color else ''}")
+        if debug:
+            _print_response_body(claude)
+        return
+
+    status = claude.get("status")
+    http_error = bool(status) and status >= 400
+    primary = claude.get("primary") or {}
+    secondary = claude.get("secondary") or {}
+    have_parsed_data = any(
+        w.get("used_percent") is not None or w.get("reset_in_seconds") is not None
+        for w in (primary, secondary)
+    )
+
+    if http_error and not have_parsed_data:
+        col = C.red if use_color else ""
+        dim = C.dim if use_color else ""
+        rst = C.reset if use_color else ""
+        if status == 401:
+            env_mode = bool(claude.get("_env_token_mode"))
+            refresh_attempted = bool(claude.get("_refresh_attempted"))
+            print(f"{col}Claude probe HTTP 401 — auth token expired or invalid{rst}")
+            if env_mode:
+                print(f"  {dim}Token came from $CLAUDE_CODE_OAUTH_TOKEN — env tokens can't auto-refresh.{rst}")
+                print(f"  {dim}Replace the env var with a fresh token, or unset it.{rst}")
+            elif refresh_attempted:
+                print(f"  {dim}Auto-refresh via `claude auth status` didn't restore access.{rst}")
+                print(f"  {dim}Run `claude` once to re-authenticate, then retry.{rst}")
+            else:
+                print(f"  {dim}Run `claude` once to re-authenticate, then retry.{rst}")
+        else:
+            print(f"{col}Claude probe HTTP {status}{rst}")
+    else:
+        print_block(
+            "Claude", None, primary, secondary, use_color,
+            no_data_hint="no utilization data returned (API-key user or Team/Enterprise plan?)",
+        )
+        if http_error:
+            col = C.yellow if use_color else ""
+            rst = C.reset if use_color else ""
+            print(f"  {col}note: HTTP {status} from probe — figures above parsed from response body{rst}")
+
+    if debug:
+        _print_response_body(claude)
+
+
+def _print_response_body(claude: dict) -> None:
+    """Dump the parsed response body for --debug. No-op when there isn't one
+    (e.g., proactive skip paths return before any HTTP call)."""
+    body = claude.get("response_body")
+    if body is None:
+        return
+    print("--- /api/oauth/usage response ---")
+    if isinstance(body, dict):
+        print(json.dumps(body, indent=2, default=str))
+    else:
+        print(body)
+
+
 def interval_seconds(value: str) -> int:
     """argparse type: parse --interval as a positive integer (seconds, >= 1).
 
@@ -1013,51 +1097,8 @@ def main(argv: list[str]) -> int:
 
     if claude is None:
         print(f"{C.gray if use_color else ''}Claude: no data{C.reset if use_color else ''}")
-    elif claude.get("error"):
-        print(f"{C.red if use_color else ''}Claude error: {claude['error']}{C.reset if use_color else ''}")
     else:
-        status = claude.get("status")
-        http_error = bool(status) and status >= 400
-        primary = claude.get("primary") or {}
-        secondary = claude.get("secondary") or {}
-        # 429 (and some 4xx) may still include partial utilization data in the
-        # response body, so surface the quota block whenever anything was
-        # extracted; the HTTP status is then shown as a trailing note rather
-        # than suppressing the data.
-        have_parsed_data = any(
-            w.get("used_percent") is not None or w.get("reset_in_seconds") is not None
-            for w in (primary, secondary)
-        )
-        if http_error and not have_parsed_data:
-            col = C.red if use_color else ""
-            dim = C.dim if use_color else ""
-            rst = C.reset if use_color else ""
-            if status == 401:
-                print(f"{col}Claude probe HTTP 401 — auth token expired or invalid{rst}")
-                print(f"  {dim}Auto-refresh via `claude auth status` didn't restore access.{rst}")
-                print(f"  {dim}Run `claude` once to re-authenticate, then retry.{rst}")
-            else:
-                print(f"{col}Claude probe HTTP {status}{rst}")
-        else:
-            print_block(
-                "Claude",
-                None,
-                primary,
-                secondary,
-                use_color,
-                no_data_hint="no utilization data returned (API-key user or Team/Enterprise plan?)",
-            )
-            if http_error:
-                col = C.yellow if use_color else ""
-                rst = C.reset if use_color else ""
-                print(f"  {col}note: HTTP {status} from probe — figures above parsed from response body{rst}")
-        if args.debug:
-            print("--- /api/oauth/usage response ---")
-            body = claude.get("response_body")
-            if isinstance(body, dict):
-                print(json.dumps(body, indent=2, default=str))
-            elif body:
-                print(body)
+        _render_claude(claude, use_color, args.debug)
 
     if data.get("_from_cache"):
         print(f"{C.gray if use_color else ''}(cached, TTL {CACHE_TTL_SECONDS}s){C.reset if use_color else ''}")
