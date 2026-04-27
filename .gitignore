@@ -35,3 +35,8 @@ usage-quota.json
 # Per-machine handoff notes for AI assistants (private context)
 CLAUDE.md
 REVIEW_HANDOFF.md
+
+# AI collaboration process artifacts — design discussions, archived
+# review briefs, AI-collab lessons-learned. These are private dev-process
+# notes, not user-facing release artifacts (which live in docs/ root).
+docs/ai-handoff/
