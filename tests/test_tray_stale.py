@@ -239,6 +239,24 @@ class TestMenuHintRow:
         app.snapshot = {"codex": {}, "claude": {"status": 401}}
         assert app._claude_hint_visible(None) is False
 
+    def test_hint_visible_on_reactive_envtok_401(self, isolated_paths):
+        """Codex pre-push catch: when an env-mode token expires server-side,
+        the result dict carries `status: 401, _env_token_mode: True` (no
+        `error` key). The classifier still returns `envtok`, so stale-bar
+        routing fires — the hint row must follow suit and surface the
+        env-var replacement instruction. Without this, the user sees stale
+        numbers with no recovery action."""
+        _seed_last_good(isolated_paths, age_seconds=2 * 3600)
+        app = TrayApp(interval=300)
+        app.snapshot = {
+            "codex": {},
+            "claude": {"status": 401, "_env_token_mode": True},
+        }
+        assert app._claude_hint_visible(None) is True
+        assert "$CLAUDE_CODE_OAUTH_TOKEN" in app._claude_hint_text(None)
+        # And the stale bar still renders.
+        assert "29%" in app._claude_5h(None)
+
 
 # --- Icon dot color (max_pct) --------------------------------------------
 

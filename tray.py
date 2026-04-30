@@ -461,14 +461,22 @@ class TrayApp:
         p = _pct_or_none(d, "secondary")
         return f"Claude week: {p:.0f}%" if p is not None else "Claude week: ?"
 
-    # --- expired-token hint row (visible only when proactive-expiry triggers) ---
+    # --- expired-token hint row (visible whenever stale-bar routing fires) ---
+    # Routed via the classifier so reactive paths line up with proactive ones:
+    # a 401 + `_env_token_mode: True` from the network round-trip surfaces
+    # as `envtok` too, and must keep the env-var replacement hint or the
+    # user sees stale numbers with no recovery instruction.
     def _claude_hint_visible(self, _item) -> bool:
         d = self.snapshot.get("claude") or {}
-        return d.get("error") in ("auth-expired-no-refresh", "env-token-expired")
+        err_info = _classify_probe_error(d, "Claude")
+        if err_info is None:
+            return False
+        return err_info[0] in ("expired", "envtok")
 
     def _claude_hint_text(self, _item) -> str:
         d = self.snapshot.get("claude") or {}
-        if d.get("error") == "env-token-expired":
+        err_info = _classify_probe_error(d, "Claude")
+        if err_info is not None and err_info[0] == "envtok":
             return "Claude: replace $CLAUDE_CODE_OAUTH_TOKEN"
         return "Claude: token expired — run `claude`"
 
