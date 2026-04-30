@@ -953,7 +953,9 @@ def _stale_bar_status(window: "dict | None") -> str:
     now = int(time.time())
     if int(reset_at) <= now + LAST_GOOD_BAR_RESET_GUARD_SECONDS:
         return "rolled_over"
-    if used is None:
+    if used is None or isinstance(used, bool):
+        # bool is a subclass of int in Python; without the explicit guard,
+        # `float(True)` would silently render as 1% utilization.
         return "no_data"
     try:
         v = float(used)

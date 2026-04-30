@@ -120,6 +120,15 @@ class TestStaleBarStatus:
         omit a window the saved record actually meant to keep."""
         assert afg._stale_bar_status({"used_percent": 29, "reset_at": True}) == "no_data"
 
+    def test_bool_used_percent_is_no_data(self):
+        """Codex round-6 catch: same bool-as-int class as `reset_at`.
+        `float(True)` is 1.0, so without the guard the bar would render
+        as 1% utilization from a hostile/evolved endpoint that emits
+        booleans for utilization."""
+        future = int(time.time()) + 3600
+        assert afg._stale_bar_status({"used_percent": True, "reset_at": future}) == "no_data"
+        assert afg._stale_bar_status({"used_percent": False, "reset_at": future}) == "no_data"
+
 
 # --- _save_last_good_claude / _load_last_good_claude ---------------------
 
