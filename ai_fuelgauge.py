@@ -885,9 +885,15 @@ def _save_last_good_claude(claude: "dict | None") -> None:
         "primary": primary if isinstance(primary, dict) else None,
         "secondary": secondary if isinstance(secondary, dict) else None,
     }
+    # Atomic write: tray polls every 5min while the CLI runs ad hoc, so the
+    # file can be opened for read mid-write. write-temp + os.replace gives
+    # readers either the old record or the new one — never a torn JSON
+    # blob that would bounce them to the empty-fallback path for one tick.
     try:
         LAST_GOOD_CLAUDE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        LAST_GOOD_CLAUDE_FILE.write_text(json.dumps(record, default=str), encoding="utf-8")
+        tmp = LAST_GOOD_CLAUDE_FILE.with_name(LAST_GOOD_CLAUDE_FILE.name + ".tmp")
+        tmp.write_text(json.dumps(record, default=str), encoding="utf-8")
+        os.replace(tmp, LAST_GOOD_CLAUDE_FILE)
     except Exception:
         pass
 
@@ -929,6 +935,10 @@ def _stale_bar_status(window: "dict | None") -> str:
     (now + guard) — at that point the cached util belongs to a window that
     has already ended, so showing it would mislead. The 60s guard avoids
     rendering a value that flips to a new window in the user's face.
+
+    'valid' additionally requires a finite numeric used_percent — a window
+    with only a future reset_at and no util can't actually be drawn, and
+    misclassifying it would surface a stale header with empty bar rows.
     """
     if not isinstance(window, dict):
         return "no_data"
@@ -940,6 +950,14 @@ def _stale_bar_status(window: "dict | None") -> str:
         now = int(time.time())
         if int(reset_at) <= now + LAST_GOOD_BAR_RESET_GUARD_SECONDS:
             return "rolled_over"
+    if used is None:
+        return "no_data"
+    try:
+        v = float(used)
+    except (TypeError, ValueError):
+        return "no_data"
+    if math.isnan(v) or math.isinf(v):
+        return "no_data"
     return "valid"
 
 

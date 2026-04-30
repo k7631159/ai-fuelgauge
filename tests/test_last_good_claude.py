@@ -81,6 +81,26 @@ class TestStaleBarStatus:
         just_past = int(time.time()) + afg.LAST_GOOD_BAR_RESET_GUARD_SECONDS + 1
         assert afg._stale_bar_status({"used_percent": 29, "reset_at": just_past}) == "valid"
 
+    def test_reset_only_no_pct_is_no_data(self):
+        """Codex review: a window with reset_at in the future but no
+        used_percent must not classify as 'valid' — the renderer would
+        print a stale header and then nothing, leaving the user staring
+        at an empty bar region."""
+        future = int(time.time()) + 3600
+        assert afg._stale_bar_status({"reset_at": future}) == "no_data"
+
+    def test_nan_pct_is_no_data(self):
+        future = int(time.time()) + 3600
+        assert afg._stale_bar_status({"used_percent": float("nan"), "reset_at": future}) == "no_data"
+
+    def test_inf_pct_is_no_data(self):
+        future = int(time.time()) + 3600
+        assert afg._stale_bar_status({"used_percent": float("inf"), "reset_at": future}) == "no_data"
+
+    def test_non_numeric_pct_is_no_data(self):
+        future = int(time.time()) + 3600
+        assert afg._stale_bar_status({"used_percent": "twenty", "reset_at": future}) == "no_data"
+
 
 # --- _save_last_good_claude / _load_last_good_claude ---------------------
 
@@ -200,6 +220,17 @@ class TestSaveLoad:
             "primary": {"used_percent": 29},
         }))
         assert afg._load_last_good_claude() is None
+
+    def test_save_uses_atomic_replace(self, isolated_paths):
+        """Codex review: write must be atomic so a tray reader during a
+        CLI save sees old-or-new, never partial JSON. Verify by ensuring
+        the .tmp side file is gone after a successful save (rename
+        atomically replaced it)."""
+        afg._save_last_good_claude(_good_probe())
+        path = isolated_paths["last_good"]
+        tmp = path.with_name(path.name + ".tmp")
+        assert path.exists()
+        assert not tmp.exists(), "temp file leaked — write was not atomic"
 
     def test_load_bool_probed_at(self, isolated_paths):
         """`bool` is a subclass of `int` in Python — guard against `True`
@@ -352,3 +383,28 @@ class TestCliRenderExpired:
         out = buf.getvalue()
         assert "$CLAUDE_CODE_OAUTH_TOKEN appears expired" in out
         assert "(stale)" not in out
+
+    def test_stale_with_only_reset_at_no_pct_falls_back(self, isolated_paths):
+        """Codex review regression: last-good written with reset_at but
+        no used_percent (e.g. an evolved API shape that drops the field)
+        must NOT render a stale header followed by an empty bar region.
+        Should collapse to the plain expired actionable error."""
+        path = isolated_paths["last_good"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "_schema": afg.LAST_GOOD_CLAUDE_SCHEMA,
+            "_probed_at": int(time.time()) - 600,
+            "primary": {"reset_at": int(time.time()) + 5400},
+            "secondary": {"reset_at": int(time.time()) + 50000},
+        }))
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            afg._render_claude(
+                {"error": "auth-expired-no-refresh"},
+                use_color=False, debug=False,
+            )
+        out = buf.getvalue()
+        # Must not display the stale header — every "valid" check failed
+        # because no displayable percent existed.
+        assert "cached" not in out.lower()
+        assert "auth token expired" in out

@@ -87,6 +87,8 @@ Tray 圖示會顯示一個彩色圓點，反映你兩個訂閱中使用率最高
 Claude 認證失敗時 tray 會顯示不同 label —— `auth`（refresh 失敗，請跑 `claude`）、
 `expired`（proactive 主動跳過，請跑 `claude`）、`envtok`（請更換
 `$CLAUDE_CODE_OAUTH_TOKEN`）—— 並在右鍵選單給你具體該怎麼修，不用翻 log。
+Token 過期但 24 小時內有成功 probe 過時，tray 會把那次的數值標成 stale 繼續
+顯示；window 已 reset 過的 bar 會明確標出已 omit，並另外加一行選單給回復動作。
 
 通知在 Windows 用 `winotify`，其他平台用 `plyer`。
 
@@ -132,7 +134,9 @@ Claude 認證失敗時 tray 會顯示不同 label —— `auth`（refresh 失敗
 如果 token 已過期、或距離過期不到 60 秒，工具會先請本機的 `claude` CLI
 （`claude auth status`）幫忙 refresh。如果 refresh 後仍然拿不到一個有效的新 token，
 **就完全不會發出網路請求**，直接顯示本地的認證錯誤 —— 這是為了避免帶著已知壞掉
-的 bearer 去打 upstream，造成共用流量被牽連。
+的 bearer 去打 upstream，造成共用流量被牽連。本地錯誤會把最近一次成功 probe
+的使用率/reset 欄位（如果有的話）當成 stale bar 顯示，上限 24 小時；schema 不符、
+時鐘漂移、或 window 已 roll-over 的情況會退回純文字「expired，請跑 `claude`」提示。
 
 這個 endpoint **沒有出現在 Anthropic 的公開 API 文件**，是保留給 Anthropic
 自家原生 application 的。本工具只為了**個人使用**去呼叫它；這不是官方認可的
@@ -148,10 +152,15 @@ Claude 認證失敗時 tray 會顯示不同 label —— `auth`（refresh 失敗
 
 ### Cache
 
-有一個 30 秒的 cache（`~/.cache/usage-quota.json`），避免連續打 `usage` 時每次
-都要重新經歷 Codex `app-server` 的冷啟動（每次 spawn 大約 4 秒），同時也算是
-對 OAuth usage endpoint 的一點禮貌。`--no-cache` 用來略過這層結果 cache；不過
-如果 Claude 的本地 token 過期且無法 refresh，auth 安全檢查仍可能跳過網路請求。
+`~/.cache/` 底下有兩個 cache：
+
+- `usage-quota.json` —— 30 秒的結果 cache，避免連續打 `usage` 時每次都要重新經歷
+  Codex `app-server` 的冷啟動（每次 spawn 大約 4 秒），同時也算是對 OAuth usage
+  endpoint 的一點禮貌。`--no-cache` 用來略過這層；不過如果 Claude 的本地 token
+  過期且無法 refresh，auth 安全檢查仍可能跳過網路請求。
+- `usage-quota-last-claude.json` —— 最近一次成功 Claude probe 的快照，最久保留
+  24 小時，只在 token 剛過期時用來把 stale bar 顯示出來，避免介面只剩一個
+  「expired」字樣。`--no-cache` **不會**略過這層；下一次成功 probe 會直接覆蓋。
 
 ## 已知限制
 

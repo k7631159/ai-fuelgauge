@@ -512,6 +512,11 @@ class TrayApp:
             self._fetch_lock.release()
 
     def _check_thresholds(self, snap: dict) -> None:
+        # Threshold-crossing notifications intentionally read only the live
+        # snapshot, not last-known-good stale bars. Re-firing toasts on
+        # stale data would notify based on the user's yesterday-state every
+        # time the tray polls, which is alarm fatigue without new info —
+        # the expired-state hint already surfaces in the icon and menu.
         max_p = 0.0
         max_s = 0.0
         for key in ("codex", "claude"):

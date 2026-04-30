@@ -94,7 +94,10 @@ option. A desktop notification fires when:
 Claude auth failures show distinct tray labels — `auth` (refresh failed,
 run `claude`), `expired` (proactive skip, run `claude`), or `envtok`
 (replace `$CLAUDE_CODE_OAUTH_TOKEN`) — with menu text explaining the
-fix without you having to dig into logs.
+fix without you having to dig into logs. When the token has expired
+but a successful Claude probe from the last 24 h is on file, the tray
+keeps showing those numbers tagged as stale; rolled-over windows are
+omitted explicitly, and an extra menu row carries the recovery action.
 
 Notifications use Windows toast (`winotify`) or `plyer` elsewhere.
 
@@ -143,7 +146,10 @@ If the token is expired or within 60 s of expiry, the tool asks the local
 `claude` CLI (`claude auth status`) to refresh it first. If refresh does not
 produce a new, non-expired token, **no network request is made** and a local
 auth error is shown — this protects shared upstream limits from being hit
-with a known-bad bearer.
+with a known-bad bearer. The local error reuses utilization/reset fields
+from the most recent successful probe (if any) as stale bars, capped at
+24 h; schema mismatch, clock skew, or rolled-over windows fall back to a
+plain "expired, run `claude`" hint.
 
 The endpoint is **not documented in Anthropic's public API docs** and is
 reserved for native Anthropic applications. This tool consumes it for
@@ -160,11 +166,17 @@ endpoint is not billed against the model rate-limit budget.
 
 ### Cache
 
-A 30-second cache (`~/.cache/usage-quota.json`) skips re-running the Codex
-`app-server` cold-start (~4 s per spawn) on back-to-back `usage` calls, and is
-a courtesy to the OAuth usage endpoint. Use `--no-cache` to bypass this result
-cache; Claude's auth safety check may still skip the network when the local
-token is expired and can't be refreshed.
+Two caches sit in `~/.cache/`:
+
+- `usage-quota.json` — 30-second result cache that skips the Codex
+  `app-server` cold-start (~4 s per spawn) on back-to-back `usage` calls,
+  and is a courtesy to the OAuth usage endpoint. `--no-cache` bypasses
+  this layer; Claude's auth safety check may still skip the network when
+  the local token is expired and can't be refreshed.
+- `usage-quota-last-claude.json` — last successful Claude probe, kept up
+  to 24 h, used only when the token has just expired so the UI can render
+  stale bars instead of a bare "expired" placeholder. `--no-cache` does
+  **not** bypass this layer; the next successful probe overwrites it.
 
 ## Known limitations
 
