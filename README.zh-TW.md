@@ -62,8 +62,8 @@ pip install --user -r requirements-tray.txt
 
 ```bash
 python ai_fuelgauge.py                 # 純文字輸出
-python ai_fuelgauge.py --json          # 機器可讀的 JSON（純原始 probe
-                                       # 結果，stale bar 不會合併進來）
+python ai_fuelgauge.py --json          # 機器可讀的 JSON（原始 probe 狀態；
+                                       # 不合併 stale bar — 見下方說明）
 python ai_fuelgauge.py --no-cache      # 略過結果 cache（auth 安全檢查仍可能
                                        # 跳過網路請求）
 python ai_fuelgauge.py --debug         # 把原始 API 回應全部 dump 出來

@@ -68,8 +68,8 @@ is technically possible but not recommended for casual use.
 
 ```bash
 python ai_fuelgauge.py                 # plain output
-python ai_fuelgauge.py --json          # machine-readable JSON (raw probe
-                                       # state — see "JSON contract" below)
+python ai_fuelgauge.py --json          # machine-readable JSON (raw probe state;
+                                       # stale bars not merged — see note below)
 python ai_fuelgauge.py --no-cache      # bypass result cache (auth safety
                                        # check may still skip the network)
 python ai_fuelgauge.py --debug         # dump raw API responses
