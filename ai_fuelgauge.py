@@ -1009,6 +1009,10 @@ def print_block(
         nonlocal have_window_data
         if not d or d.get("used_percent") is None:
             return
+        if isinstance(d["used_percent"], bool):
+            # bool is a subclass of int; without this guard True/False from
+            # an evolved endpoint would render as a 1% / 0% bar.
+            return
         try:
             pct = float(d["used_percent"])
         except (TypeError, ValueError):

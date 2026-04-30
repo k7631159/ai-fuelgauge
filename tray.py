@@ -204,7 +204,7 @@ def _max_pct(snap: dict) -> float:
             continue
         for w in ("primary", "secondary"):
             p = (d.get(w) or {}).get("used_percent")
-            if p is None:
+            if p is None or isinstance(p, bool):
                 continue
             try:
                 v = float(p)
@@ -399,7 +399,9 @@ def _pct_or_none(d, window) -> "float | None":
         return None
     w = d.get(window) or {}
     p = w.get("used_percent")
-    if p is None:
+    if p is None or isinstance(p, bool):
+        # bool is a subclass of int; without this guard True/False from an
+        # evolved endpoint would render as 1% / 0%.
         return None
     try:
         v = float(p)

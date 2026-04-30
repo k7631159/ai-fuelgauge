@@ -136,3 +136,33 @@ class TestSummaryLineNaN:
         # `5h:` / `week:` labels. NaN values surface as `?`.
         assert "5h: 30%" in result and "week: 20%" in result
         assert "5h: ?" in result and "week: ?" in result
+
+
+class TestBoolUsedPercent:
+    """`bool` is a subclass of `int` in Python; `float(True)` is 1.0.
+    Without explicit guards, an evolved endpoint emitting boolean
+    utilization would render as 1% / 0% across the live CLI/tray paths
+    (the stale path closed this in commit 8f9aa1c)."""
+
+    def test_print_block_skips_bool_pct(self, capsys):
+        from ai_fuelgauge import print_block
+        print_block(
+            "Test", None,
+            {"used_percent": True, "reset_in_seconds": 300},
+            None,
+            use_color=False,
+        )
+        out = capsys.readouterr().out
+        assert "1%" not in out
+        assert "True" not in out
+
+    def test_pct_or_none_rejects_bool(self):
+        d = {"primary": {"used_percent": True}}
+        assert tray._pct_or_none(d, "primary") is None
+
+    def test_max_pct_skips_bool_in_live_path(self):
+        snap = {
+            "codex": {"primary": {"used_percent": True}},
+            "claude": {"primary": {"used_percent": False}},
+        }
+        assert tray._max_pct(snap) == 0.0
