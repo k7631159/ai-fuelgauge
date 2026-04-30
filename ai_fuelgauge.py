@@ -944,8 +944,8 @@ def _render_claude(claude: dict, use_color: bool, debug: bool) -> None:
                 elif mins_ago > 0:
                     ago_text = f" ({mins_ago:.0f}m ago)"
             print(f"{col}Claude: auth token expired{ago_text}{rst}")
-            print(f"  {dim}Quick fix: run `claude` → `/exit` → `usage` again.{rst}")
-            print(f"  {dim}Claude CLI has no non-interactive refresh; this is a one-time manual step.{rst}")
+            print(f"  {dim}To refresh: open `claude`, type `/exit` in the prompt, then run `usage` again.{rst}")
+            print(f"  {dim}Claude CLI has no non-interactive refresh — this is a one-time manual step.{rst}")
             print(f"  {dim}(No HTTP request was made — proactive skip avoids rate-limit triggers.){rst}")
         return
     if err:
