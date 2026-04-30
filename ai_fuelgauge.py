@@ -1081,6 +1081,13 @@ def _render_claude(claude: dict, use_color: bool, debug: bool) -> None:
         expiry_kind = "env-token-expired"
     if expiry_kind:
         _render_claude_expired(claude, expiry_kind, use_color)
+        # The proactive expiry paths return before any HTTP call, so
+        # response_body is absent and `_print_response_body` is a no-op.
+        # The reactive env-token 401 path DOES carry a body when
+        # debug=True (the 401 response from upstream), and the user
+        # asked for raw payloads — print it before returning.
+        if debug:
+            _print_response_body(claude)
         return
     if err:
         # no-token-found, probe-failed: …, or anything unclassified.

@@ -427,6 +427,27 @@ class TestCliRenderExpired:
         assert "(stale)" not in out
         assert "HTTP 401" not in out
 
+    def test_reactive_envtok_401_debug_dumps_body(self, isolated_paths):
+        """Codex round-4 catch: routing the reactive env-token 401 into
+        the expiry branch must not eat the `--debug` body dump. The
+        documented `--debug` contract is to print raw API responses,
+        and 401 from /api/oauth/usage carries a body the user may
+        want to inspect."""
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            afg._render_claude(
+                {
+                    "status": 401,
+                    "_env_token_mode": True,
+                    "response_body": {"error": {"type": "authentication_error",
+                                                "message": "expired"}},
+                },
+                use_color=False, debug=True,
+            )
+        out = buf.getvalue()
+        assert "/api/oauth/usage response" in out
+        assert "authentication_error" in out
+
     def test_stale_with_only_reset_at_no_pct_falls_back(self, isolated_paths):
         """Codex review regression: last-good written with reset_at but
         no used_percent (e.g. an evolved API shape that drops the field)
