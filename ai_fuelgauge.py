@@ -935,9 +935,18 @@ def _render_claude(claude: dict, use_color: bool, debug: bool) -> None:
             print(f"  {dim}Env tokens can't be auto-refreshed. Replace the env var with a fresh token,{rst}")
             print(f"  {dim}or unset it to fall back to ~/.claude/.credentials.json + `claude` login.{rst}")
         else:
-            print(f"{col}Claude: token expired and auto-refresh didn't help{rst}")
-            print(f"  {dim}No HTTP request was made (proactive skip — protects against rate-limit triggers).{rst}")
-            print(f"  {dim}Run `claude` once to re-authenticate, then retry `usage`.{rst}")
+            expires_at_ms = claude.get("_expires_at_ms")
+            ago_text = ""
+            if expires_at_ms:
+                mins_ago = (int(time.time() * 1000) - expires_at_ms) / 1000 / 60
+                if mins_ago > 60:
+                    ago_text = f" ({mins_ago / 60:.1f}h ago)"
+                elif mins_ago > 0:
+                    ago_text = f" ({mins_ago:.0f}m ago)"
+            print(f"{col}Claude: auth token expired{ago_text}{rst}")
+            print(f"  {dim}Quick fix: run `claude` → `/exit` → `usage` again.{rst}")
+            print(f"  {dim}Claude CLI has no non-interactive refresh; this is a one-time manual step.{rst}")
+            print(f"  {dim}(No HTTP request was made — proactive skip avoids rate-limit triggers.){rst}")
         return
     if err:
         # no-token-found, probe-failed: …, or anything unclassified.
