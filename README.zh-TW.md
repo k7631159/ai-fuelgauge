@@ -62,11 +62,17 @@ pip install --user -r requirements-tray.txt
 
 ```bash
 python ai_fuelgauge.py                 # 純文字輸出
-python ai_fuelgauge.py --json          # 機器可讀的 JSON
+python ai_fuelgauge.py --json          # 機器可讀的 JSON（純原始 probe
+                                       # 結果，stale bar 不會合併進來）
 python ai_fuelgauge.py --no-cache      # 略過結果 cache（auth 安全檢查仍可能
                                        # 跳過網路請求）
 python ai_fuelgauge.py --debug         # 把原始 API 回應全部 dump 出來
 ```
+
+`--json` 輸出的是 raw probe 狀態。Claude token 過期時人類介面（CLI/tray）
+會額外用 last-known-good 顯示 stale bar，但這些**不會**合併進 JSON payload
+—— 程式化消費者拿到的是同樣的 probe error 欄位；如果要 stale 快照，自行讀
+`~/.cache/usage-quota-last-claude.json`。
 
 包一個 shell alias（Windows 用 `usage.cmd` / Linux 用 `usage` symlink），
 這樣只要打 `usage` 就好。

@@ -68,11 +68,19 @@ is technically possible but not recommended for casual use.
 
 ```bash
 python ai_fuelgauge.py                 # plain output
-python ai_fuelgauge.py --json          # machine-readable JSON
+python ai_fuelgauge.py --json          # machine-readable JSON (raw probe
+                                       # state — see "JSON contract" below)
 python ai_fuelgauge.py --no-cache      # bypass result cache (auth safety
                                        # check may still skip the network)
 python ai_fuelgauge.py --debug         # dump raw API responses
 ```
+
+`--json` emits the raw probe state. When the Claude token has expired,
+the human-readable CLI / tray will additionally render last-known-good
+stale bars, but those are not merged into the JSON payload — JSON
+consumers see the same probe error fields and can read
+`~/.cache/usage-quota-last-claude.json` directly if they want the
+stale snapshot.
 
 Wrap it in a shell alias (Windows `usage.cmd` / Linux `usage` symlink) so you
 can just type `usage`.

@@ -251,14 +251,30 @@ class TestSaveLoad:
 
     def test_save_uses_atomic_replace(self, isolated_paths):
         """Codex review: write must be atomic so a tray reader during a
-        CLI save sees old-or-new, never partial JSON. Verify by ensuring
-        the .tmp side file is gone after a successful save (rename
-        atomically replaced it)."""
+        CLI save sees old-or-new, never partial JSON. Verify there are
+        no `.tmp` leftovers in the parent directory after a clean save —
+        the unique-named temp file should always be either replaced into
+        the final path or unlinked on error."""
         afg._save_last_good_claude(_good_probe())
         path = isolated_paths["last_good"]
-        tmp = path.with_name(path.name + ".tmp")
         assert path.exists()
-        assert not tmp.exists(), "temp file leaked — write was not atomic"
+        leftover_tmps = list(path.parent.glob("*.tmp"))
+        assert leftover_tmps == [], f"temp file leaked: {leftover_tmps}"
+
+    def test_save_supports_concurrent_writers(self, isolated_paths):
+        """Codex deep-review catch: CLI and tray can both call save at
+        nearly the same instant. With a shared `.tmp` filename one
+        writer's in-flight write would clobber the other's. Verify by
+        running many saves serially that each leaves zero leftover
+        temp files (each call must use its own unique tmp name)."""
+        for i in range(5):
+            afg._save_last_good_claude(_good_probe(primary_pct=i * 10))
+        path = isolated_paths["last_good"]
+        leftover_tmps = list(path.parent.glob("*.tmp"))
+        assert leftover_tmps == [], f"temp file leaked: {leftover_tmps}"
+        # Final state reflects the last write (35% used_percent).
+        loaded = afg._load_last_good_claude()
+        assert loaded["primary"]["used_percent"] == 4 * 10
 
     def test_load_bool_probed_at(self, isolated_paths):
         """`bool` is a subclass of `int` in Python — guard against `True`

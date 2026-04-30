@@ -889,11 +889,28 @@ def _save_last_good_claude(claude: "dict | None") -> None:
     # file can be opened for read mid-write. write-temp + os.replace gives
     # readers either the old record or the new one — never a torn JSON
     # blob that would bounce them to the empty-fallback path for one tick.
+    # `tempfile.mkstemp` gives a per-process unique temp name so two
+    # simultaneous savers (e.g. CLI + tray firing at the same second)
+    # can't trample each other's in-flight write before the rename.
     try:
-        LAST_GOOD_CLAUDE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = LAST_GOOD_CLAUDE_FILE.with_name(LAST_GOOD_CLAUDE_FILE.name + ".tmp")
-        tmp.write_text(json.dumps(record, default=str), encoding="utf-8")
-        os.replace(tmp, LAST_GOOD_CLAUDE_FILE)
+        import tempfile
+        parent = LAST_GOOD_CLAUDE_FILE.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(parent),
+            prefix=LAST_GOOD_CLAUDE_FILE.name + ".",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(record, default=str))
+            os.replace(tmp_path, LAST_GOOD_CLAUDE_FILE)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     except Exception:
         pass
 
