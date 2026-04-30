@@ -414,6 +414,34 @@ def _pct_or_none(d, window) -> "float | None":
     return v
 
 
+def _reset_str(d, window) -> "str | None":
+    """Format the time-to-reset for one window as a human-readable
+    countdown ('3h03m', '15h35m'), live-recomputed from `reset_at`
+    when available so the displayed countdown stays accurate even
+    minutes after the probe.
+
+    Falls back to the at-probe-time `reset_in_seconds` when no
+    `reset_at` was captured. Returns None when neither is usable —
+    caller should omit the reset annotation rather than show '-'.
+    """
+    if not isinstance(d, dict):
+        return None
+    w = d.get(window) or {}
+    if not isinstance(w, dict):
+        return None
+    reset_at = w.get("reset_at")
+    if isinstance(reset_at, (int, float)) and not isinstance(reset_at, bool):
+        delta = int(reset_at) - int(time.time())
+        if delta < 0:
+            delta = 0
+        return afg.fmt_duration(delta)
+    reset_in = w.get("reset_in_seconds")
+    if isinstance(reset_in, (int, float)) and not isinstance(reset_in, bool):
+        delta = max(0, int(reset_in))
+        return afg.fmt_duration(delta)
+    return None
+
+
 class TrayApp:
     def __init__(self, interval: int = DEFAULT_INTERVAL_SECONDS) -> None:
         self.interval = interval
@@ -438,14 +466,20 @@ class TrayApp:
         if err_info is not None:
             return err_info[1]
         p = _pct_or_none(d, "primary")
-        return f"Codex 5h: {p:.0f}%" if p is not None else "Codex 5h: ?"
+        if p is None:
+            return "Codex 5h: ?"
+        reset = _reset_str(d, "primary")
+        return f"Codex 5h: {p:.0f}% (resets {reset})" if reset else f"Codex 5h: {p:.0f}%"
 
     def _codex_week(self, _item):
         d = self.snapshot.get("codex") or {}
         if _classify_probe_error(d, "Codex") is not None:
             return "Codex week: -"
         p = _pct_or_none(d, "secondary")
-        return f"Codex week: {p:.0f}%" if p is not None else "Codex week: ?"
+        if p is None:
+            return "Codex week: ?"
+        reset = _reset_str(d, "secondary")
+        return f"Codex week: {p:.0f}% (resets {reset})" if reset else f"Codex week: {p:.0f}%"
 
     def _claude_5h(self, _item):
         d = self.snapshot.get("claude") or {}
@@ -458,7 +492,10 @@ class TrayApp:
                 return _claude_stale_menu_label("primary", "5h")
             return err_info[1]
         p = _pct_or_none(d, "primary")
-        return f"Claude 5h: {p:.0f}%" if p is not None else "Claude 5h: ?"
+        if p is None:
+            return "Claude 5h: ?"
+        reset = _reset_str(d, "primary")
+        return f"Claude 5h: {p:.0f}% (resets {reset})" if reset else f"Claude 5h: {p:.0f}%"
 
     def _claude_week(self, _item):
         d = self.snapshot.get("claude") or {}
@@ -468,7 +505,10 @@ class TrayApp:
                 return _claude_stale_menu_label("secondary", "week")
             return "Claude week: --"
         p = _pct_or_none(d, "secondary")
-        return f"Claude week: {p:.0f}%" if p is not None else "Claude week: ?"
+        if p is None:
+            return "Claude week: ?"
+        reset = _reset_str(d, "secondary")
+        return f"Claude week: {p:.0f}% (resets {reset})" if reset else f"Claude week: {p:.0f}%"
 
     # --- expired-token hint row (visible whenever stale-bar routing fires) ---
     # Routed via the classifier so reactive paths line up with proactive ones:
