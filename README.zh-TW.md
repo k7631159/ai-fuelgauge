@@ -116,7 +116,7 @@ Token 過期但 24 小時內有成功 probe 過時，tray 會把那次的數值�
 
 ## 運作原理
 
-### Codex 這邊 —— 半官方路線
+### Codex 這邊 —— 走 Codex CLI 的實驗性介面
 
 把 `codex app-server` 當成 subprocess 生出來，然後送一個 JSON-RPC request：
 

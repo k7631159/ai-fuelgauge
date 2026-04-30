@@ -65,8 +65,8 @@ CODEX_APP_SERVER_TIMEOUT = 8  # seconds
 CLAUDE_AUTH_REFRESH_TIMEOUT = 10  # seconds for `claude auth status` invocation
 # Treat the token as expired if it expires within this many seconds. Avoids
 # the race where a token passes the local check, then expires mid-flight
-# and the server returns 401. Codex suggested 60s; bigger means more
-# proactive refreshes, smaller means more in-flight expirations.
+# and the server returns 401. 60s is a conservative buffer; bigger means
+# more proactive refreshes, smaller means more in-flight expirations.
 CLAUDE_TOKEN_EXPIRY_BUFFER_SECONDS = 60
 
 # Last-known-good Claude probe — preserved beyond the 30s probe cache so the
@@ -631,11 +631,11 @@ def probe_claude_quota(debug: bool = False, _allow_refresh: bool = True) -> dict
     against the model rate-limit budget).
     """
     # Proactive token expiry check — root-cause defense, not a backstop.
-    # Today's incident showed CF treats expired-bearer requests as abuse and
-    # locks the IP for ~30 minutes. The cheapest way to avoid that is to
-    # never send an expired bearer in the first place: read expiresAt from
-    # credentials.json locally, refresh proactively if expired, and bail
-    # out without a network call if refresh truly fails.
+    # Cloudflare in front of api.anthropic.com treats expired-bearer requests
+    # as abuse and can lock the source IP for ~30 minutes. The cheapest way
+    # to avoid that is to never send an expired bearer in the first place:
+    # read expiresAt from credentials.json locally, refresh proactively if
+    # expired, and bail out without a network call if refresh truly fails.
     creds = read_claude_creds_with_meta()
     if creds is None:
         return {"error": "no-token-found"}
@@ -718,14 +718,14 @@ def probe_claude_quota(debug: bool = False, _allow_refresh: bool = True) -> dict
         return {"error": f"probe-failed: {e}"}
 
     # 401 → token-fingerprint-aware refresh path.
-    # Logic (see commit msg for rationale):
     #   1. Re-read token. If it's already different from the one that 401'd,
     #      another process refreshed for us — retry directly without spawning.
     #   2. Skip spawn entirely in env-token mode (env tokens can't refresh).
     #   3. Otherwise spawn `claude auth status`. After spawn, re-read token.
     #      ONLY retry if fingerprint actually changed. Subprocess returncode
-    #      is informational; trusting it caused today's bug where refresh
-    #      "succeeded" (exit 0) but didn't rewrite credentials.
+    #      is informational; trusting it once produced a silent failure where
+    #      refresh "succeeded" (exit 0) but didn't actually rewrite
+    #      credentials, which the fingerprint comparison detects.
     if status == 401 and _allow_refresh:
         if _is_env_token_mode():
             # Caller will see status=401 + this marker and surface a

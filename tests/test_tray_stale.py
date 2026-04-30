@@ -113,7 +113,8 @@ class TestTooltipPartialStale:
         # 5h omitted, week present.
         assert "5h:" not in claude_line
         assert "week: 15%" in claude_line
-        # Rollover annotation, with the wording Codex preferred.
+        # Rollover annotation explicit so users understand why a bar
+        # is missing rather than thinking the data is incomplete.
         assert "5h window reset" in claude_line
 
     def test_week_rolled_over_5h_valid(self, isolated_paths):
@@ -240,12 +241,12 @@ class TestMenuHintRow:
         assert app._claude_hint_visible(None) is False
 
     def test_hint_visible_on_reactive_envtok_401(self, isolated_paths):
-        """Codex pre-push catch: when an env-mode token expires server-side,
-        the result dict carries `status: 401, _env_token_mode: True` (no
-        `error` key). The classifier still returns `envtok`, so stale-bar
-        routing fires — the hint row must follow suit and surface the
-        env-var replacement instruction. Without this, the user sees stale
-        numbers with no recovery action."""
+        """When an env-mode token expires server-side, the result
+        dict carries `status: 401, _env_token_mode: True` (no
+        `error` key). The classifier returns `envtok`, so stale-bar
+        routing fires — the hint row must follow suit and surface
+        the env-var replacement instruction. Without this, the user
+        sees stale numbers with no recovery action."""
         _seed_last_good(isolated_paths, age_seconds=2 * 3600)
         app = TrayApp(interval=300)
         app.snapshot = {
@@ -302,12 +303,11 @@ class TestMaxPctStale:
         assert _max_pct(snap) == 0.0
 
     def test_includes_stale_on_reactive_envtok_401(self, isolated_paths):
-        """Codex round-2 catch: reactive env-token 401 surfaces as
-        `{status: 401, _env_token_mode: True}` (no `error` key). Menu /
-        tooltip / hint already route stale via the classifier, but
-        `_max_pct` previously checked the raw `error` field — leaving
-        the icon dot inconsistent with the menu values. All four
-        consumers now go through the classifier."""
+        """Reactive env-token 401 surfaces as `{status: 401,
+        _env_token_mode: True}` with no `error` key. All four tray
+        consumers (icon, tooltip, menu rows, hint) route stale via
+        `_classify_probe_error` so the icon dot, tooltip, and menu
+        values stay consistent across proactive and reactive paths."""
         _seed_last_good(isolated_paths, primary_pct=85, secondary_pct=15, age_seconds=2 * 3600)
         snap = {
             "codex": {

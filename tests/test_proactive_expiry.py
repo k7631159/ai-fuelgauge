@@ -198,18 +198,18 @@ class TestProactiveSkipsProbe:
         assert result["status"] == 200
 
     def test_reactive_401_retry_with_stale_refreshed_token_skips_network(self, valid_creds_file):
-        """Codex pre-push catch: the reactive 401 retry path uses
-        _allow_refresh=False, which previously also disabled the proactive
-        expiry guard. If `claude auth status` rewrote credentials with a
-        DIFFERENT but ALSO-EXPIRED token (clock skew / refresh bug), the
-        retry would still send the stale bearer to upstream — violating
-        the README's 'no network request if refresh doesn't produce a new
-        non-expired token' contract.
+        """The reactive 401 retry path uses `_allow_refresh=False`,
+        which previously also disabled the proactive expiry guard.
+        If `claude auth status` rewrote credentials with a DIFFERENT
+        but ALSO-EXPIRED token (clock skew / refresh bug), the retry
+        would still send the stale bearer upstream — violating the
+        README's 'no network request if refresh doesn't produce a
+        new non-expired token' contract.
 
-        Now the expiry guard is unconditional (only the refresh ATTEMPT is
-        gated by _allow_refresh), so the retry detects the stale-but-
-        changed token and bails with auth-expired-no-refresh before any
-        second HTTP call."""
+        The expiry guard is now unconditional (only the refresh
+        ATTEMPT is gated by `_allow_refresh`), so the retry detects
+        the stale-but-changed token and bails with
+        `auth-expired-no-refresh` before any second HTTP call."""
         from tests.test_claude_probe import _mk_http_error
         creds_path = valid_creds_file
 

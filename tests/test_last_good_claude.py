@@ -82,9 +82,9 @@ class TestStaleBarStatus:
         assert afg._stale_bar_status({"used_percent": 29, "reset_at": just_past}) == "valid"
 
     def test_reset_only_no_pct_is_no_data(self):
-        """Codex review: a window with reset_at in the future but no
-        used_percent must not classify as 'valid' — the renderer would
-        print a stale header and then nothing, leaving the user staring
+        """A window with reset_at in the future but no used_percent
+        must not classify as 'valid' — the renderer would print a
+        stale header and then nothing, leaving the user staring
         at an empty bar region."""
         future = int(time.time()) + 3600
         assert afg._stale_bar_status({"reset_at": future}) == "no_data"
@@ -102,10 +102,10 @@ class TestStaleBarStatus:
         assert afg._stale_bar_status({"used_percent": "twenty", "reset_at": future}) == "no_data"
 
     def test_missing_reset_at_is_no_data(self):
-        """Codex round-5 catch: a saved window with utilization but no
-        `reset_at` cannot be classified — we can't tell if the original
-        window has rolled over. Refuse to display rather than risk
-        showing stale numbers up to 24h past the actual rollover."""
+        """A saved window with utilization but no `reset_at` cannot be
+        classified — we can't tell if the original window has rolled
+        over. Refuse to display rather than risk showing stale numbers
+        up to 24h past the actual rollover."""
         assert afg._stale_bar_status({"used_percent": 29}) == "no_data"
 
     def test_none_reset_at_is_no_data(self):
@@ -121,10 +121,10 @@ class TestStaleBarStatus:
         assert afg._stale_bar_status({"used_percent": 29, "reset_at": True}) == "no_data"
 
     def test_bool_used_percent_is_no_data(self):
-        """Codex round-6 catch: same bool-as-int class as `reset_at`.
-        `float(True)` is 1.0, so without the guard the bar would render
-        as 1% utilization from a hostile/evolved endpoint that emits
-        booleans for utilization."""
+        """Same bool-as-int class as `reset_at`: `float(True)` is 1.0,
+        so without the guard the bar would render as 1% utilization
+        from a hostile / evolved endpoint that emits booleans for
+        utilization."""
         future = int(time.time()) + 3600
         assert afg._stale_bar_status({"used_percent": True, "reset_at": future}) == "no_data"
         assert afg._stale_bar_status({"used_percent": False, "reset_at": future}) == "no_data"
@@ -250,8 +250,8 @@ class TestSaveLoad:
         assert afg._load_last_good_claude() is None
 
     def test_save_uses_atomic_replace(self, isolated_paths):
-        """Codex review: write must be atomic so a tray reader during a
-        CLI save sees old-or-new, never partial JSON. Verify there are
+        """Write must be atomic so a tray reader during a CLI save
+        sees old-or-new, never partial JSON. Verify there are
         no `.tmp` leftovers in the parent directory after a clean save —
         the unique-named temp file should always be either replaced into
         the final path or unlinked on error."""
@@ -262,11 +262,11 @@ class TestSaveLoad:
         assert leftover_tmps == [], f"temp file leaked: {leftover_tmps}"
 
     def test_save_supports_concurrent_writers(self, isolated_paths):
-        """Codex deep-review catch: CLI and tray can both call save at
-        nearly the same instant. With a shared `.tmp` filename one
-        writer's in-flight write would clobber the other's. Verify by
-        running many saves serially that each leaves zero leftover
-        temp files (each call must use its own unique tmp name)."""
+        """CLI and tray can both call save at nearly the same instant.
+        With a shared `.tmp` filename one writer's in-flight write
+        would clobber the other's. Verify by running many saves
+        serially that each leaves zero leftover temp files (each call
+        must use its own unique tmp name)."""
         for i in range(5):
             afg._save_last_good_claude(_good_probe(primary_pct=i * 10))
         path = isolated_paths["last_good"]
@@ -429,12 +429,12 @@ class TestCliRenderExpired:
         assert "(stale)" not in out
 
     def test_reactive_envtok_401_uses_stale_path(self, isolated_paths):
-        """Codex round-3 catch: a reactive env-token 401 (env token without
-        local `expires_at_ms` that the server later 401s) arrives as
-        `{status: 401, _env_token_mode: True}` with no `error` key. Tray
-        already routes this to stale via the classifier; CLI must follow,
-        otherwise the same probe state renders inconsistently across the
-        two surfaces."""
+        """A reactive env-token 401 (env token without local
+        `expires_at_ms` that the server later 401s) arrives as
+        `{status: 401, _env_token_mode: True}` with no `error` key.
+        Both tray and CLI must route this to the stale-bar path so
+        the proactive and reactive expiry states render consistently
+        across both surfaces."""
         _seed_last_good(
             isolated_paths,
             primary_reset_at=int(time.time()) + 5000,
@@ -453,8 +453,9 @@ class TestCliRenderExpired:
         assert "29%" in out
         assert "(stale)" in out
         assert "Replace $CLAUDE_CODE_OAUTH_TOKEN" in out
-        # The legacy "Claude probe HTTP 401" line must not appear — that
-        # was the old behaviour we're replacing.
+        # The generic "Claude probe HTTP 401" line must not appear in
+        # this path — env-token 401 routes to the dedicated env-var
+        # rendering, not the generic HTTP-error one.
         assert "HTTP 401" not in out
 
     def test_reactive_envtok_401_no_stale_falls_back(self, isolated_paths):
@@ -472,11 +473,11 @@ class TestCliRenderExpired:
         assert "HTTP 401" not in out
 
     def test_reactive_envtok_401_debug_dumps_body(self, isolated_paths):
-        """Codex round-4 catch: routing the reactive env-token 401 into
-        the expiry branch must not eat the `--debug` body dump. The
-        documented `--debug` contract is to print raw API responses,
-        and 401 from /api/oauth/usage carries a body the user may
-        want to inspect."""
+        """Routing the reactive env-token 401 into the expiry branch
+        must not eat the `--debug` body dump. The documented
+        `--debug` contract is to print raw API responses, and 401
+        from /api/oauth/usage carries a body the user may want to
+        inspect."""
         buf = io.StringIO()
         with redirect_stdout(buf):
             afg._render_claude(
@@ -493,10 +494,11 @@ class TestCliRenderExpired:
         assert "authentication_error" in out
 
     def test_stale_with_only_reset_at_no_pct_falls_back(self, isolated_paths):
-        """Codex review regression: last-good written with reset_at but
-        no used_percent (e.g. an evolved API shape that drops the field)
-        must NOT render a stale header followed by an empty bar region.
-        Should collapse to the plain expired actionable error."""
+        """Regression: last-good written with reset_at but no
+        used_percent (e.g. an evolved API shape that drops the field)
+        must NOT render a stale header followed by an empty bar
+        region. Should collapse to the plain expired actionable
+        error."""
         path = isolated_paths["last_good"]
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({

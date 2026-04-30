@@ -1,4 +1,4 @@
-"""Tests for TrayApp._do_fetch exception handling (fetch exception handling).
+"""Tests for TrayApp._do_fetch exception handling.
 
 The previous implementation placed `_apply_to_icon()` in a `try/else`
 branch outside the exception handler. If Pillow or pystray raised during
@@ -120,9 +120,9 @@ class TestDoFetchExceptionHandling:
         assert apply_calls["count"] == 1
 
     def test_stderr_none_does_not_crash_on_error(self, monkeypatch):
-        """Regression (Codex pre-commit review): under pythonw.exe, sys.stderr
-        can be None. The except branch's stderr.write(None) would itself
-        raise AttributeError and kill the thread — defeating the purpose."""
+        """Regression: under `pythonw.exe`, `sys.stderr` can be None.
+        The except branch's `stderr.write(None)` would itself raise
+        AttributeError and kill the thread — defeating the purpose."""
         import sys as _sys
 
         monkeypatch.setattr(_sys, "stderr", None)

@@ -1,4 +1,4 @@
-"""Tests for Codex app-server subprocess lifecycle (subprocess cleanup).
+"""Tests for Codex app-server subprocess lifecycle.
 
 Ensures the terminate → wait → kill cleanup sequence prevents zombie
 processes on Unix / hung child processes on any platform.

@@ -1,6 +1,8 @@
 """Tests for Codex probe tolerance — _normalize_codex_window + main render guard.
 
-Covers robustness review items H2, M2, M3.
+Covers malformed-response paths: missing fields, non-numeric utilization,
+unexpected bucket shapes — all should degrade gracefully rather than
+crash the render.
 """
 from unittest.mock import patch
 
@@ -63,9 +65,9 @@ class TestNormalizeCodexWindow:
         assert result["reset_at"] == 1_800_000_000
 
     def test_explicit_null_resetsAt_falls_back_to_snake_case(self):
-        """Per Codex pre-commit review: when `resetsAt` is present but None
-        AND `reset_at` has a value, fallback should still take the snake-case
-        value, not stick at None."""
+        """When `resetsAt` is present but None AND `reset_at` has a
+        value, the fallback should still take the snake-case value,
+        not stick at None."""
         result = _normalize_codex_window(
             {"resetsAt": None, "reset_at": 1_800_000_000},
             now=1_700_000_000,
@@ -169,9 +171,9 @@ class TestMainRenderStaleTimestampGuard:
         assert exit_code == 0
 
     def test_bool_as_of_is_rejected(self, capsys, isolated_paths):
-        """Per Codex pre-commit review: bool is int in Python (`int(False)==0`),
-        which would render as a 1970-epoch "stale 56 years ago" — obviously
-        wrong. The guard must exclude bool before int()."""
+        """`bool` is `int` in Python (`int(False) == 0`), which would
+        render as a 1970-epoch "stale 56 years ago" — obviously wrong.
+        The guard must exclude `bool` before `int()`."""
         import ai_fuelgauge as afg
 
         data = {

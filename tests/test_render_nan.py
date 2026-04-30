@@ -1,4 +1,4 @@
-"""Tests for NaN / infinity handling in the CLI and tray renderers (non-finite render handling).
+"""Tests for NaN / infinity handling in the CLI and tray renderers.
 
 `json.loads` accepts NaN and Infinity via `parse_constant`, so a hostile or
 misbehaving endpoint returning `{"utilization": NaN}` used to propagate

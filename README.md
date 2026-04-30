@@ -128,7 +128,7 @@ redact anything you don't want in a public issue.
 
 ## How it works
 
-### Codex side — official-ish
+### Codex side — experimental Codex CLI interface
 
 Spawns `codex app-server` as a subprocess and sends a JSON-RPC request:
 

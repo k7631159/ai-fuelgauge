@@ -245,7 +245,7 @@ def _classify_probe_error(d: "dict | None", provider: str) -> "tuple[str, str] |
             return "expired", "Claude: token expired — run `claude` to re-login"
         # Check status-based signals next — a concrete HTTP code is more
         # specific than a generic "probe-failed" string, so it wins when
-        # both are present (per Codex pre-commit review).
+        # both are present.
         if status == 429:
             return "429", "Claude: rate limited, retrying later"
         if status == 401:

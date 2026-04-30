@@ -1,12 +1,10 @@
-"""Tests for the tray error classification (new commit 6 — Codex + Claude UX).
-
-Before this commit, the tray showed `Claude ?/?` or `Codex ?/?` for every
-failure regardless of cause — which several users (including the author)
-read as "the tool is broken" rather than "server said 429" / "token expired".
+"""Tests for the tray error classification.
 
 The classifier maps probe-result dicts to (short_label, menu_text). Short
 labels go in the tray title (≤8 chars); menu_text is the right-click
-explanation.
+explanation. Surfacing a specific cause (`429`, `auth`, `offline`,
+`login`, ...) avoids the ambiguous `Claude ?/?` rendering that reads
+as "the tool is broken" rather than "server said X".
 """
 import pytest
 
@@ -145,7 +143,7 @@ class TestClassifyCodexErrors:
 
 class TestClassifyPriority:
     """Ordering between status-based and error-key signals matters — the more
-    specific HTTP code wins when both are present. Codex pre-commit guard."""
+    specific HTTP code wins when both are present."""
 
     def test_status_429_wins_over_probe_failed(self):
         """If both `status: 429` and `error: probe-failed` were ever set on

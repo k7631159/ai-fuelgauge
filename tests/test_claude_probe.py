@@ -91,9 +91,9 @@ class TestProbeClaudeQuotaHappyPath:
         assert fake.closed is True, "urlopen response must be closed via context manager"
 
     def test_http_error_body_is_closed(self, valid_creds_file):
-        """M7 extension (caught by Codex pre-commit review): HTTPError wraps
-        a file-like body too. Without close() we leak fds during 4xx storms —
-        exactly the 429 rate-limit scenario we're trying to survive."""
+        """`HTTPError` wraps a file-like body too. Without `close()` we
+        leak fds during 4xx storms — exactly the 429 rate-limit
+        scenario we're trying to survive."""
         close_counter = {"calls": 0}
 
         def fake_urlopen(req, timeout=None):
