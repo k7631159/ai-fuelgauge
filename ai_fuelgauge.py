@@ -936,9 +936,11 @@ def _stale_bar_status(window: "dict | None") -> str:
     has already ended, so showing it would mislead. The 60s guard avoids
     rendering a value that flips to a new window in the user's face.
 
-    'valid' additionally requires a finite numeric used_percent — a window
-    with only a future reset_at and no util can't actually be drawn, and
-    misclassifying it would surface a stale header with empty bar rows.
+    'valid' requires both a finite numeric used_percent AND a numeric
+    reset_at. Without a trustworthy reset_at we can't distinguish a
+    rolled-over window from one still in flight, so we refuse to
+    display the bar — silently showing potentially-rolled-over numbers
+    would undercut the "omit rolled-over" contract.
     """
     if not isinstance(window, dict):
         return "no_data"
@@ -946,10 +948,11 @@ def _stale_bar_status(window: "dict | None") -> str:
     reset_at = window.get("reset_at")
     if used is None and reset_at is None:
         return "no_data"
-    if isinstance(reset_at, (int, float)) and not isinstance(reset_at, bool):
-        now = int(time.time())
-        if int(reset_at) <= now + LAST_GOOD_BAR_RESET_GUARD_SECONDS:
-            return "rolled_over"
+    if not isinstance(reset_at, (int, float)) or isinstance(reset_at, bool):
+        return "no_data"
+    now = int(time.time())
+    if int(reset_at) <= now + LAST_GOOD_BAR_RESET_GUARD_SECONDS:
+        return "rolled_over"
     if used is None:
         return "no_data"
     try:

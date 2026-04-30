@@ -101,6 +101,25 @@ class TestStaleBarStatus:
         future = int(time.time()) + 3600
         assert afg._stale_bar_status({"used_percent": "twenty", "reset_at": future}) == "no_data"
 
+    def test_missing_reset_at_is_no_data(self):
+        """Codex round-5 catch: a saved window with utilization but no
+        `reset_at` cannot be classified — we can't tell if the original
+        window has rolled over. Refuse to display rather than risk
+        showing stale numbers up to 24h past the actual rollover."""
+        assert afg._stale_bar_status({"used_percent": 29}) == "no_data"
+
+    def test_none_reset_at_is_no_data(self):
+        assert afg._stale_bar_status({"used_percent": 29, "reset_at": None}) == "no_data"
+
+    def test_non_numeric_reset_at_is_no_data(self):
+        assert afg._stale_bar_status({"used_percent": 29, "reset_at": "tomorrow"}) == "no_data"
+
+    def test_bool_reset_at_is_no_data(self):
+        """`bool` subclasses `int`; True passing as reset_at would
+        classify as 'rolled_over' (True == 1 → in the past) and silently
+        omit a window the saved record actually meant to keep."""
+        assert afg._stale_bar_status({"used_percent": 29, "reset_at": True}) == "no_data"
+
 
 # --- _save_last_good_claude / _load_last_good_claude ---------------------
 
