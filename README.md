@@ -109,7 +109,7 @@ omitted explicitly, and an extra menu row carries the recovery action.
 
 Notifications use Windows toast (`winotify`) or `plyer` elsewhere.
 
-## Support matrix (v0.1.0-preview)
+## Support matrix (v0.2.0-preview)
 
 | Environment | CLI | Tray | Notes |
 |---|---|---|---|

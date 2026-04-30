@@ -98,7 +98,7 @@ Token 過期但 24 小時內有成功 probe 過時，tray 會把那次的數值�
 
 通知在 Windows 用 `winotify`，其他平台用 `plyer`。
 
-## 支援情況（v0.1.0-preview）
+## 支援情況（v0.2.0-preview）
 
 | 環境 | CLI | Tray | 備註 |
 |---|---|---|---|

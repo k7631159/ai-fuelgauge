@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-fuelgauge"
-version = "0.1.0"
+version = "0.2.0"
 description = "Personal AI-subscription quota viewer (Codex + Claude); source for reference, not published to PyPI."
 readme = "README.md"
 requires-python = ">=3.7"
