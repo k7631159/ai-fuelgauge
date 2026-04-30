@@ -301,6 +301,24 @@ class TestMaxPctStale:
         }
         assert _max_pct(snap) == 0.0
 
+    def test_includes_stale_on_reactive_envtok_401(self, isolated_paths):
+        """Codex round-2 catch: reactive env-token 401 surfaces as
+        `{status: 401, _env_token_mode: True}` (no `error` key). Menu /
+        tooltip / hint already route stale via the classifier, but
+        `_max_pct` previously checked the raw `error` field — leaving
+        the icon dot inconsistent with the menu values. All four
+        consumers now go through the classifier."""
+        _seed_last_good(isolated_paths, primary_pct=85, secondary_pct=15, age_seconds=2 * 3600)
+        snap = {
+            "codex": {
+                "primary": {"used_percent": 30.0},
+                "secondary": {"used_percent": 25.0},
+            },
+            "claude": {"status": 401, "_env_token_mode": True},
+        }
+        # Stale 85% must drive the icon dot just like in the proactive case.
+        assert _max_pct(snap) == 85.0
+
 
 # --- _claude_stale_menu_label module helper ------------------------------
 

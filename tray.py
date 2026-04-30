@@ -175,11 +175,18 @@ def _max_pct(snap: dict) -> float:
         d = snap.get(key) or {}
         if not isinstance(d, dict):
             continue
-        # Claude proactive-expiry: defer to last-known-good so the icon dot
-        # keeps reflecting the bars the user sees in the menu (instead of
-        # silently dropping to 0 and going green when Claude is at 95%).
+        # Claude proactive-expiry / reactive env-token 401: defer to last-
+        # known-good so the icon dot keeps reflecting the bars the user
+        # sees in the menu (instead of silently dropping to 0 and going
+        # green when Claude is at 95%). Routed through the same
+        # classifier as the menu/tooltip/hint paths so all four agree on
+        # which states qualify as stale-displayable.
         # Only stale bars whose original window hasn't rolled over count.
-        if key == "claude" and d.get("error") in ("auth-expired-no-refresh", "env-token-expired"):
+        if key == "claude":
+            err_info = _classify_probe_error(d, "Claude")
+        else:
+            err_info = None
+        if err_info is not None and err_info[0] in ("expired", "envtok"):
             stale = afg._load_last_good_claude()
             if stale:
                 for w in ("primary", "secondary"):
