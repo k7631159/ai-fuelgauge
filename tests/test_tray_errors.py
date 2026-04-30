@@ -192,9 +192,10 @@ class TestSummaryLineWithErrors:
             "claude": {"status": 429},
         }
         result = _summary_line(snap)
-        assert "Codex 30%/20%" in result
-        assert "Claude 429" in result
-        assert "Claude ?/?" not in result
+        # Multi-line tooltip with explicit window labels.
+        assert "5h: 30%" in result and "week: 20%" in result
+        assert "429" in result
+        assert "5h: ?" not in result and "week: ?" not in result
 
     def test_codex_not_installed_label(self):
         snap = {
@@ -205,18 +206,20 @@ class TestSummaryLineWithErrors:
             },
         }
         result = _summary_line(snap)
-        assert "Codex no-cli" in result
-        assert "Claude 25%/10%" in result
+        assert "no-cli" in result
+        assert "5h: 25%" in result and "week: 10%" in result
 
     def test_both_error_labels_independent(self):
-        """Each side's error label surfaces independently."""
+        """Each side's error label surfaces independently. The 6-char column
+        width makes spacing depend on label length; assert label substrings
+        rather than exact spacing."""
         snap = {
             "codex": {"error": "no-response-from-app-server"},
             "claude": {"error": "no-token-found"},
         }
         result = _summary_line(snap)
-        assert "Codex no-resp" in result
-        assert "Claude login" in result
+        assert "Codex" in result and "no-resp" in result
+        assert "Claude" in result and "login" in result
 
 
 class TestMenuGetters:
@@ -229,11 +232,13 @@ class TestMenuGetters:
 
     def test_claude_week_menu_shows_dash_on_error(self):
         """To avoid duplicating the same error message on two adjacent menu
-        rows, the week row shows a simple `-` when an error is detected."""
+        rows, the week row shows `--` when an error is detected. The double
+        dash is consistent with the `Claude 5h: -- (window reset)` style
+        used in the stale-bar fallback paths."""
         app = TrayApp(interval=300)
         app.snapshot = {"codex": {}, "claude": {"status": 401}}
         label = app._claude_week(None)
-        assert label == "Claude week: -"
+        assert label == "Claude week: --"
 
     def test_codex_5h_menu_shows_not_found_message(self):
         app = TrayApp(interval=300)

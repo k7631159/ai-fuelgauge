@@ -24,11 +24,13 @@ def isolated_paths(monkeypatch, tmp_path):
     tmp_creds = tmp_path / ".claude" / ".credentials.json"
     tmp_creds.parent.mkdir(parents=True, exist_ok=True)
     tmp_cache = tmp_path / ".cache" / "usage-quota.json"
+    tmp_last_good = tmp_path / ".cache" / "usage-quota-last-claude.json"
     tmp_sqlite = tmp_path / ".codex" / "logs_2.sqlite"
 
     monkeypatch.setattr(afg, "HOME", tmp_path)
     monkeypatch.setattr(afg, "CLAUDE_CREDS", tmp_creds)
     monkeypatch.setattr(afg, "CACHE_FILE", tmp_cache)
+    monkeypatch.setattr(afg, "LAST_GOOD_CLAUDE_FILE", tmp_last_good)
     monkeypatch.setattr(afg, "CODEX_LOGS_DB", tmp_sqlite)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
@@ -37,6 +39,7 @@ def isolated_paths(monkeypatch, tmp_path):
         "tmp": tmp_path,
         "creds": tmp_creds,
         "cache": tmp_cache,
+        "last_good": tmp_last_good,
         "sqlite": tmp_sqlite,
     }
 

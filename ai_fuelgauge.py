@@ -69,6 +69,19 @@ CLAUDE_AUTH_REFRESH_TIMEOUT = 10  # seconds for `claude auth status` invocation
 # proactive refreshes, smaller means more in-flight expirations.
 CLAUDE_TOKEN_EXPIRY_BUFFER_SECONDS = 60
 
+# Last-known-good Claude probe — preserved beyond the 30s probe cache so the
+# expired-token UI can render stale-but-actionable bars instead of a bare
+# "expired" placeholder. Stays bounded to a single quota window's worth of
+# usefulness; past 24h the data is too stale to be informative.
+LAST_GOOD_CLAUDE_FILE = HOME / ".cache" / "usage-quota-last-claude.json"
+LAST_GOOD_CLAUDE_TTL_SECONDS = 24 * 3600
+# Bump if the saved record's shape changes; old records become invalid.
+LAST_GOOD_CLAUDE_SCHEMA = 1
+# Within this many seconds of a window's resets_at, the cached util is treated
+# as rolled-over (not displayable). Avoids rendering a number that flips to a
+# new window the moment the user reads it.
+LAST_GOOD_BAR_RESET_GUARD_SECONDS = 60
+
 # --- ANSI colors (enabled on Windows 10+ cmd via os.system('') trick) ---
 if os.name == "nt":
     os.system("")  # enables VT processing on Windows cmd
@@ -846,6 +859,105 @@ def save_cache(data: dict) -> None:
         pass
 
 
+# --- last-known-good Claude (stale-bar fallback for expired-token paths) ---
+def _save_last_good_claude(claude: "dict | None") -> None:
+    """Persist a successful Claude probe so the next expired-token probe can
+    render stale bars instead of a bare 'expired' placeholder.
+
+    Saves only when the result clearly came from a usable response (no error,
+    HTTP < 400, at least one window block parsed). Records only the bar-render
+    fields — token / refresh / debug metadata is intentionally dropped.
+    """
+    if not isinstance(claude, dict):
+        return
+    if claude.get("error"):
+        return
+    status = claude.get("status")
+    if isinstance(status, int) and status >= 400:
+        return
+    primary = claude.get("primary")
+    secondary = claude.get("secondary")
+    if not (isinstance(primary, dict) or isinstance(secondary, dict)):
+        return
+    record = {
+        "_schema": LAST_GOOD_CLAUDE_SCHEMA,
+        "_probed_at": int(time.time()),
+        "primary": primary if isinstance(primary, dict) else None,
+        "secondary": secondary if isinstance(secondary, dict) else None,
+    }
+    try:
+        LAST_GOOD_CLAUDE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LAST_GOOD_CLAUDE_FILE.write_text(json.dumps(record, default=str), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _load_last_good_claude() -> "dict | None":
+    """Return the last-known-good Claude record if it's recent and trusted.
+
+    Rejects: missing file, unreadable JSON, non-dict shape, schema mismatch,
+    age > 24h, and clock-skew (cached time in the future). The schema gate
+    ensures we never render bars from a record shape the current code no
+    longer trusts.
+    """
+    if not LAST_GOOD_CLAUDE_FILE.exists():
+        return None
+    try:
+        data = json.loads(LAST_GOOD_CLAUDE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("_schema") != LAST_GOOD_CLAUDE_SCHEMA:
+        return None
+    probed_at = data.get("_probed_at")
+    if not isinstance(probed_at, (int, float)) or isinstance(probed_at, bool):
+        return None
+    age = int(time.time()) - int(probed_at)
+    if age < 0:
+        # Cached probe time is in the future — clock skew or tampering.
+        return None
+    if age > LAST_GOOD_CLAUDE_TTL_SECONDS:
+        return None
+    return data
+
+
+def _stale_bar_status(window: "dict | None") -> str:
+    """Classify a cached window for display: 'valid', 'rolled_over', 'no_data'.
+
+    A window is rolled_over once the original resets_at is at or past
+    (now + guard) — at that point the cached util belongs to a window that
+    has already ended, so showing it would mislead. The 60s guard avoids
+    rendering a value that flips to a new window in the user's face.
+    """
+    if not isinstance(window, dict):
+        return "no_data"
+    used = window.get("used_percent")
+    reset_at = window.get("reset_at")
+    if used is None and reset_at is None:
+        return "no_data"
+    if isinstance(reset_at, (int, float)) and not isinstance(reset_at, bool):
+        now = int(time.time())
+        if int(reset_at) <= now + LAST_GOOD_BAR_RESET_GUARD_SECONDS:
+            return "rolled_over"
+    return "valid"
+
+
+def _format_stale_age(seconds: int) -> str:
+    """Render age as a human, rounded-down string: '0m', '45m', '3h', '1d'.
+
+    Rounded down (not nearest) so a "3h stale" label never overstates
+    freshness. No decimals — false precision on cached data is misleading.
+    """
+    if seconds < 0:
+        seconds = 0
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
 # --- rendering ---
 def print_block(
     name: str,
@@ -927,26 +1039,7 @@ def _render_claude(claude: dict, use_color: bool, debug: bool) -> None:
     """
     err = claude.get("error")
     if err in ("auth-expired-no-refresh", "env-token-expired"):
-        col = C.red if use_color else ""
-        dim = C.dim if use_color else ""
-        rst = C.reset if use_color else ""
-        if err == "env-token-expired":
-            print(f"{col}Claude: $CLAUDE_CODE_OAUTH_TOKEN appears expired{rst}")
-            print(f"  {dim}Env tokens can't be auto-refreshed. Replace the env var with a fresh token,{rst}")
-            print(f"  {dim}or unset it to fall back to ~/.claude/.credentials.json + `claude` login.{rst}")
-        else:
-            expires_at_ms = claude.get("_expires_at_ms")
-            ago_text = ""
-            if expires_at_ms:
-                mins_ago = (int(time.time() * 1000) - expires_at_ms) / 1000 / 60
-                if mins_ago > 60:
-                    ago_text = f" ({mins_ago / 60:.1f}h ago)"
-                elif mins_ago > 0:
-                    ago_text = f" ({mins_ago:.0f}m ago)"
-            print(f"{col}Claude: auth token expired{ago_text}{rst}")
-            print(f"  {dim}To refresh: open `claude`, type `/exit` in the prompt, then run `usage` again.{rst}")
-            print(f"  {dim}Claude CLI has no non-interactive refresh — this is a one-time manual step.{rst}")
-            print(f"  {dim}(No HTTP request was made — proactive skip avoids rate-limit triggers.){rst}")
+        _render_claude_expired(claude, err, use_color)
         return
     if err:
         # no-token-found, probe-failed: …, or anything unclassified.
@@ -994,6 +1087,106 @@ def _render_claude(claude: dict, use_color: bool, debug: bool) -> None:
 
     if debug:
         _print_response_body(claude)
+
+
+def _render_claude_expired(claude: dict, err: str, use_color: bool) -> None:
+    """Render the proactive-expiry branch with last-known-good stale bars
+    when a recent successful probe is on file, or fall back to a plain
+    actionable error when it isn't.
+
+    The stale path preserves ambient usefulness (the user still sees
+    yesterday's 5h / week numbers) without pretending they're fresh — the
+    header marks staleness, each bar carries a (stale) tag, and rolled-over
+    windows are explicitly omitted rather than silently misrepresented.
+    """
+    col = C.red if use_color else ""
+    dim = C.dim if use_color else ""
+    rst = C.reset if use_color else ""
+
+    last_good = _load_last_good_claude()
+    primary_status = "no_data"
+    secondary_status = "no_data"
+    if last_good is not None:
+        primary_status = _stale_bar_status(last_good.get("primary"))
+        secondary_status = _stale_bar_status(last_good.get("secondary"))
+    have_displayable_stale = (
+        last_good is not None
+        and (primary_status == "valid" or secondary_status == "valid")
+    )
+
+    if have_displayable_stale:
+        age = int(time.time()) - int(last_good["_probed_at"])
+        age_text = _format_stale_age(age)
+        if err == "env-token-expired":
+            print(f"{col}Claude  ($CLAUDE_CODE_OAUTH_TOKEN expired — cached {age_text} ago){rst}")
+        else:
+            print(f"{col}Claude  (cached {age_text} ago; token expired){rst}")
+        _render_stale_bar("5h", last_good.get("primary"), primary_status, use_color)
+        _render_stale_bar("week", last_good.get("secondary"), secondary_status, use_color)
+        if err == "env-token-expired":
+            print(f"  {dim}Replace $CLAUDE_CODE_OAUTH_TOKEN with a fresh token, or unset it.{rst}")
+        else:
+            print(f"  {dim}To refresh: open `claude`, type `/exit`, then run `usage` again.{rst}")
+        print()
+        return
+
+    # No usable stale data — fall back to the plain expired actionable error.
+    if err == "env-token-expired":
+        print(f"{col}Claude: $CLAUDE_CODE_OAUTH_TOKEN appears expired{rst}")
+        print(f"  {dim}Env tokens can't be auto-refreshed. Replace the env var with a fresh token,{rst}")
+        print(f"  {dim}or unset it to fall back to ~/.claude/.credentials.json + `claude` login.{rst}")
+        return
+
+    expires_at_ms = claude.get("_expires_at_ms")
+    ago_text = ""
+    if expires_at_ms:
+        mins_ago = (int(time.time() * 1000) - expires_at_ms) / 1000 / 60
+        if mins_ago > 60:
+            ago_text = f" ({mins_ago / 60:.1f}h ago)"
+        elif mins_ago > 0:
+            ago_text = f" ({mins_ago:.0f}m ago)"
+    print(f"{col}Claude: auth token expired{ago_text}{rst}")
+    print(f"  {dim}To refresh: open `claude`, type `/exit` in the prompt, then run `usage` again.{rst}")
+    print(f"  {dim}Claude CLI has no non-interactive refresh — this is a one-time manual step.{rst}")
+    print(f"  {dim}(No HTTP request was made — proactive skip avoids rate-limit triggers.){rst}")
+
+
+def _render_stale_bar(label: str, window: "dict | None", status: str, use_color: bool) -> None:
+    """Print one stale Claude bar honoring per-bar validity.
+
+    'no_data'      — silent (the bar didn't exist in the cached probe).
+    'rolled_over'  — explicit "(cached window already reset — omitted)" so
+                     the absence of a number is intentional, not a layout
+                     glitch.
+    'valid'        — render bar with re-derived "reset in N" from the
+                     original reset_at (so the countdown stays accurate
+                     even hours after the probe), tagged (stale).
+    """
+    dim = C.dim if use_color else ""
+    rst = C.reset if use_color else ""
+    if status == "no_data":
+        return
+    if status == "rolled_over":
+        print(f"  {label:8} {dim}(cached window already reset — omitted){rst}")
+        return
+    if not isinstance(window, dict):
+        return
+    pct = window.get("used_percent")
+    try:
+        pct_f = float(pct)
+    except (TypeError, ValueError):
+        return
+    if math.isnan(pct_f) or math.isinf(pct_f):
+        return
+    reset_at = window.get("reset_at")
+    if isinstance(reset_at, (int, float)) and not isinstance(reset_at, bool):
+        reset_in = int(reset_at) - int(time.time())
+    else:
+        reset_in = window.get("reset_in_seconds")
+    reset_str = fmt_duration(int(reset_in)) if isinstance(reset_in, (int, float)) else "-"
+    col = color_for(pct_f) if use_color else ""
+    bar_str = bar(pct_f, use_color=use_color)
+    print(f"  {label:8} {col}{pct_f:4.0f}%{rst}  {bar_str}  reset {reset_str}  {dim}(stale){rst}")
 
 
 def _print_response_body(claude: dict) -> None:
@@ -1071,6 +1264,10 @@ def main(argv: list[str]) -> int:
                 if args.debug and codex_fresh:
                     codex["_fresh_debug"] = {k: v for k, v in codex_fresh.items() if k in ("status","response_body","headers","response_body_sample")}
         claude = probe_claude_quota(debug=args.debug)
+        # Persist the last successful Claude probe so the next expired-token
+        # render (CLI or tray) can show stale bars rather than a bare
+        # "expired" placeholder. No-op when the probe didn't succeed.
+        _save_last_good_claude(claude)
         data = {"codex": codex, "claude": claude, "_from_cache": False}
         if not args.debug:
             save_cache(data)

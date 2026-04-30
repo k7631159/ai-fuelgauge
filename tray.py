@@ -162,6 +162,10 @@ def _snapshot() -> dict:
             if isinstance(codex, dict):
                 codex["_source"] = "sqlite-snapshot"
     claude = afg.probe_claude_quota()
+    # Mirror the CLI: each successful probe updates the stale-bar fallback
+    # used the next time the token has expired. Only writes on success;
+    # no-ops on error / 4xx / no parsed windows.
+    afg._save_last_good_claude(claude)
     return {"codex": codex, "claude": claude}
 
 
@@ -169,20 +173,41 @@ def _max_pct(snap: dict) -> float:
     m = 0.0
     for key in ("codex", "claude"):
         d = snap.get(key) or {}
-        if isinstance(d, dict):
-            for w in ("primary", "secondary"):
-                p = (d.get(w) or {}).get("used_percent")
-                if p is None:
-                    continue
-                try:
-                    v = float(p)
-                except (TypeError, ValueError):
-                    continue
-                # NaN / inf propagate through max() unpredictably and would
-                # feed into _make_icon's threshold comparison; skip them.
-                if math.isnan(v) or math.isinf(v):
-                    continue
-                m = max(m, v)
+        if not isinstance(d, dict):
+            continue
+        # Claude proactive-expiry: defer to last-known-good so the icon dot
+        # keeps reflecting the bars the user sees in the menu (instead of
+        # silently dropping to 0 and going green when Claude is at 95%).
+        # Only stale bars whose original window hasn't rolled over count.
+        if key == "claude" and d.get("error") in ("auth-expired-no-refresh", "env-token-expired"):
+            stale = afg._load_last_good_claude()
+            if stale:
+                for w in ("primary", "secondary"):
+                    bar_data = stale.get(w)
+                    if afg._stale_bar_status(bar_data) != "valid":
+                        continue
+                    p = bar_data.get("used_percent") if isinstance(bar_data, dict) else None
+                    try:
+                        v = float(p) if p is not None else None
+                    except (TypeError, ValueError):
+                        v = None
+                    if v is None or math.isnan(v) or math.isinf(v):
+                        continue
+                    m = max(m, v)
+            continue
+        for w in ("primary", "secondary"):
+            p = (d.get(w) or {}).get("used_percent")
+            if p is None:
+                continue
+            try:
+                v = float(p)
+            except (TypeError, ValueError):
+                continue
+            # NaN / inf propagate through max() unpredictably and would
+            # feed into _make_icon's threshold comparison; skip them.
+            if math.isnan(v) or math.isinf(v):
+                continue
+            m = max(m, v)
     return m
 
 
@@ -252,23 +277,114 @@ def _classify_probe_error(d: "dict | None", provider: str) -> "tuple[str, str] |
 
 
 def _summary_line(snap: dict) -> str:
-    parts = []
+    """Build the multi-line tray tooltip.
+
+    Two lines so Codex and Claude are vertically aligned and individually
+    scannable. NOTIFYICONDATA.szTip on Windows accepts \\r\\n; on other
+    platforms pystray may collapse the newline to a space, which is an
+    acceptable fallback (still readable).
+    """
+    lines = []
     for label, key in (("Codex", "codex"), ("Claude", "claude")):
         d = snap.get(key) or {}
-        # Classify known error states — surfaces failure reason (429, login,
-        # offline, ...) instead of the opaque bare "?/?".
-        err_info = _classify_probe_error(d, label)
-        if err_info is not None:
-            parts.append(f"{label} {err_info[0]}")
-            continue
-        # Route through _pct_or_none so NaN / non-numeric values show "?"
-        # instead of "nan%".
-        p = _pct_or_none(d, "primary")
-        s = _pct_or_none(d, "secondary")
-        p_str = f"{p:.0f}%" if p is not None else "?"
-        s_str = f"{s:.0f}%" if s is not None else "?"
-        parts.append(f"{label} {p_str}/{s_str}")
-    return " | ".join(parts)
+        lines.append(_provider_summary_line(label, d))
+    return "\r\n".join(lines)
+
+
+def _provider_summary_line(label: str, d: dict) -> str:
+    """Format one provider's tooltip line with healthy/stale/error variants."""
+    err_info = _classify_probe_error(d, label)
+    if err_info is not None:
+        # Stale-with-bars: when the proactive-expiry error has a recent
+        # last-known-good behind it, prefer the stale summary so the
+        # tooltip still carries useful numbers instead of just "expired".
+        if label == "Claude" and err_info[0] in ("expired", "envtok"):
+            stale = _claude_stale_tooltip()
+            if stale:
+                return stale
+            return f"{label:6}  expired"
+        return f"{label:6}  {err_info[0]}"
+    p = _pct_or_none(d, "primary")
+    s = _pct_or_none(d, "secondary")
+    p_str = f"{p:.0f}%" if p is not None else "?"
+    s_str = f"{s:.0f}%" if s is not None else "?"
+    return f"{label:6}  5h: {p_str}  week: {s_str}"
+
+
+def _claude_stale_tooltip() -> "str | None":
+    """Format the Claude tooltip line from last-known-good when usable.
+
+    Returns None when there's nothing displayable (cache miss, expired
+    cache, both bars rolled over). Skips rolled-over bars from the line
+    and notes the rollover in the suffix so users know why a bar is
+    missing rather than thinking the data is incomplete.
+    """
+    last_good = afg._load_last_good_claude()
+    if not last_good:
+        return None
+    primary = last_good.get("primary")
+    secondary = last_good.get("secondary")
+    p_status = afg._stale_bar_status(primary)
+    s_status = afg._stale_bar_status(secondary)
+    age_seconds = int(time.time()) - int(last_good["_probed_at"])
+    age_text = afg._format_stale_age(age_seconds)
+
+    parts = []
+    if p_status == "valid":
+        try:
+            pct = float(primary["used_percent"])
+            if not (math.isnan(pct) or math.isinf(pct)):
+                parts.append(f"5h: {pct:.0f}%")
+        except (TypeError, ValueError, KeyError):
+            pass
+    if s_status == "valid":
+        try:
+            pct = float(secondary["used_percent"])
+            if not (math.isnan(pct) or math.isinf(pct)):
+                parts.append(f"week: {pct:.0f}%")
+        except (TypeError, ValueError, KeyError):
+            pass
+
+    if not parts:
+        return None
+
+    rolled_note = ""
+    if p_status == "rolled_over" and s_status == "valid":
+        rolled_note = "; 5h window reset"
+    elif s_status == "rolled_over" and p_status == "valid":
+        rolled_note = "; week window reset"
+
+    return f"Claude   {'  '.join(parts)}  ({age_text} stale, expired{rolled_note})"
+
+
+def _claude_stale_menu_label(window_key: str, window_short: str) -> str:
+    """Format one Claude menu row from last-known-good state.
+
+    Returns "Claude {short}: 29% (3h stale)" when the cached bar is still
+    in its window, "Claude {short}: -- (window reset)" when rolled over,
+    and "Claude {short}: --" when nothing usable is available. The double
+    dash is intentional and consistent across every fallback so menu
+    width stays stable across scenarios.
+    """
+    last_good = afg._load_last_good_claude()
+    if not last_good:
+        return f"Claude {window_short}: --"
+    bar_data = last_good.get(window_key)
+    status = afg._stale_bar_status(bar_data)
+    if status == "rolled_over":
+        return f"Claude {window_short}: -- (window reset)"
+    if status != "valid" or not isinstance(bar_data, dict):
+        return f"Claude {window_short}: --"
+    pct = bar_data.get("used_percent")
+    try:
+        pct_f = float(pct) if pct is not None else None
+    except (TypeError, ValueError):
+        pct_f = None
+    if pct_f is None or math.isnan(pct_f) or math.isinf(pct_f):
+        return f"Claude {window_short}: --"
+    age = int(time.time()) - int(last_good["_probed_at"])
+    age_text = afg._format_stale_age(age)
+    return f"Claude {window_short}: {pct_f:.0f}% ({age_text} stale)"
 
 
 def _pct_or_none(d, window) -> "float | None":
@@ -326,16 +442,35 @@ class TrayApp:
         d = self.snapshot.get("claude") or {}
         err_info = _classify_probe_error(d, "Claude")
         if err_info is not None:
+            # Proactive-expiry: render stale-or-omitted bar so the menu
+            # 5h/week rows stay populated instead of collapsing into the
+            # generic 'run claude' explanation.
+            if err_info[0] in ("expired", "envtok"):
+                return _claude_stale_menu_label("primary", "5h")
             return err_info[1]
         p = _pct_or_none(d, "primary")
         return f"Claude 5h: {p:.0f}%" if p is not None else "Claude 5h: ?"
 
     def _claude_week(self, _item):
         d = self.snapshot.get("claude") or {}
-        if _classify_probe_error(d, "Claude") is not None:
-            return "Claude week: -"
+        err_info = _classify_probe_error(d, "Claude")
+        if err_info is not None:
+            if err_info[0] in ("expired", "envtok"):
+                return _claude_stale_menu_label("secondary", "week")
+            return "Claude week: --"
         p = _pct_or_none(d, "secondary")
         return f"Claude week: {p:.0f}%" if p is not None else "Claude week: ?"
+
+    # --- expired-token hint row (visible only when proactive-expiry triggers) ---
+    def _claude_hint_visible(self, _item) -> bool:
+        d = self.snapshot.get("claude") or {}
+        return d.get("error") in ("auth-expired-no-refresh", "env-token-expired")
+
+    def _claude_hint_text(self, _item) -> str:
+        d = self.snapshot.get("claude") or {}
+        if d.get("error") == "env-token-expired":
+            return "Claude: replace $CLAUDE_CODE_OAUTH_TOKEN"
+        return "Claude: token expired — run `claude`"
 
     # --- actions ---
     def _refresh_now(self, _icon=None, _item=None):
@@ -422,6 +557,14 @@ class TrayApp:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(self._claude_5h, None, enabled=False),
             pystray.MenuItem(self._claude_week, None, enabled=False),
+            # Action hint row appears below the bars so the user reads the
+            # retained values first, then the recovery action — error-first
+            # ordering would make stale-with-bars look less actionable than
+            # it is. Hidden in the healthy/non-expiry paths.
+            pystray.MenuItem(
+                self._claude_hint_text, None,
+                enabled=False, visible=self._claude_hint_visible,
+            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Refresh now", self._refresh_now),
             pystray.MenuItem("Quit", self._quit),

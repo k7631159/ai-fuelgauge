@@ -132,5 +132,7 @@ class TestSummaryLineNaN:
         }
         result = tray._summary_line(snap)
         assert "nan" not in result.lower()
-        assert "Codex 30%/20%" in result
-        assert "Claude ?/?" in result
+        # Multi-line tooltip: each provider on its own line, with explicit
+        # `5h:` / `week:` labels. NaN values surface as `?`.
+        assert "5h: 30%" in result and "week: 20%" in result
+        assert "5h: ?" in result and "week: ?" in result
