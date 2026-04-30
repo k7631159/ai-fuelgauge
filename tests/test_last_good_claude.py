@@ -384,6 +384,49 @@ class TestCliRenderExpired:
         assert "$CLAUDE_CODE_OAUTH_TOKEN appears expired" in out
         assert "(stale)" not in out
 
+    def test_reactive_envtok_401_uses_stale_path(self, isolated_paths):
+        """Codex round-3 catch: a reactive env-token 401 (env token without
+        local `expires_at_ms` that the server later 401s) arrives as
+        `{status: 401, _env_token_mode: True}` with no `error` key. Tray
+        already routes this to stale via the classifier; CLI must follow,
+        otherwise the same probe state renders inconsistently across the
+        two surfaces."""
+        _seed_last_good(
+            isolated_paths,
+            primary_reset_at=int(time.time()) + 5000,
+            secondary_reset_at=int(time.time()) + 50000,
+            age_seconds=2 * 3600,
+        )
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            afg._render_claude(
+                {"status": 401, "_env_token_mode": True},
+                use_color=False, debug=False,
+            )
+        out = buf.getvalue()
+        # Stale bars + env-var replacement hint (matches the proactive
+        # `error: env-token-expired` rendering).
+        assert "29%" in out
+        assert "(stale)" in out
+        assert "Replace $CLAUDE_CODE_OAUTH_TOKEN" in out
+        # The legacy "Claude probe HTTP 401" line must not appear — that
+        # was the old behaviour we're replacing.
+        assert "HTTP 401" not in out
+
+    def test_reactive_envtok_401_no_stale_falls_back(self, isolated_paths):
+        """No last-known-good seeded: same reactive envtok 401 still
+        produces the env-var replacement hint, just without bars."""
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            afg._render_claude(
+                {"status": 401, "_env_token_mode": True},
+                use_color=False, debug=False,
+            )
+        out = buf.getvalue()
+        assert "$CLAUDE_CODE_OAUTH_TOKEN appears expired" in out
+        assert "(stale)" not in out
+        assert "HTTP 401" not in out
+
     def test_stale_with_only_reset_at_no_pct_falls_back(self, isolated_paths):
         """Codex review regression: last-good written with reset_at but
         no used_percent (e.g. an evolved API shape that drops the field)

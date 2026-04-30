@@ -1056,8 +1056,31 @@ def _render_claude(claude: dict, use_color: bool, debug: bool) -> None:
     replace an env var.
     """
     err = claude.get("error")
-    if err in ("auth-expired-no-refresh", "env-token-expired"):
-        _render_claude_expired(claude, err, use_color)
+    status = claude.get("status")
+    primary = claude.get("primary") or {}
+    secondary = claude.get("secondary") or {}
+    have_parsed_data = any(
+        w.get("used_percent") is not None or w.get("reset_in_seconds") is not None
+        for w in (primary, secondary)
+    )
+    http_error = bool(status) and status >= 400
+
+    # Map both proactive and reactive env-token expiry to the same UX
+    # path so CLI matches tray's classifier (which collapses these into
+    # a single `envtok` state). The reactive case arrives without an
+    # `error` key — the probe got an HTTP response, just a 401 — so
+    # detect via the `_env_token_mode` marker. Skipped when the body
+    # actually parsed window data (rare but possible), so the legacy
+    # 401-with-body path keeps working.
+    expiry_kind = None
+    if err == "auth-expired-no-refresh":
+        expiry_kind = "auth-expired-no-refresh"
+    elif err == "env-token-expired":
+        expiry_kind = "env-token-expired"
+    elif status == 401 and claude.get("_env_token_mode") and not have_parsed_data:
+        expiry_kind = "env-token-expired"
+    if expiry_kind:
+        _render_claude_expired(claude, expiry_kind, use_color)
         return
     if err:
         # no-token-found, probe-failed: …, or anything unclassified.
@@ -1066,27 +1089,18 @@ def _render_claude(claude: dict, use_color: bool, debug: bool) -> None:
             _print_response_body(claude)
         return
 
-    status = claude.get("status")
-    http_error = bool(status) and status >= 400
-    primary = claude.get("primary") or {}
-    secondary = claude.get("secondary") or {}
-    have_parsed_data = any(
-        w.get("used_percent") is not None or w.get("reset_in_seconds") is not None
-        for w in (primary, secondary)
-    )
-
     if http_error and not have_parsed_data:
         col = C.red if use_color else ""
         dim = C.dim if use_color else ""
         rst = C.reset if use_color else ""
         if status == 401:
-            env_mode = bool(claude.get("_env_token_mode"))
+            # The env-token branch is handled earlier via the expiry-kind
+            # routing — by the time we land here, _env_token_mode is False
+            # (or have_parsed_data was True, in which case we'd be in the
+            # `else` arm rendering bars).
             refresh_attempted = bool(claude.get("_refresh_attempted"))
             print(f"{col}Claude probe HTTP 401 — auth token expired or invalid{rst}")
-            if env_mode:
-                print(f"  {dim}Token came from $CLAUDE_CODE_OAUTH_TOKEN — env tokens can't auto-refresh.{rst}")
-                print(f"  {dim}Replace the env var with a fresh token, or unset it.{rst}")
-            elif refresh_attempted:
+            if refresh_attempted:
                 print(f"  {dim}Auto-refresh via `claude auth status` didn't restore access.{rst}")
                 print(f"  {dim}Run `claude` once to re-authenticate, then retry.{rst}")
             else:
