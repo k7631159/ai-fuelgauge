@@ -414,6 +414,27 @@ def _pct_or_none(d, window) -> "float | None":
     return v
 
 
+def _window_max_provider(snap: dict, window: str) -> "tuple[float, str]":
+    max_pct = 0.0
+    max_labels: list[str] = []
+    for label, key in (("Codex", "codex"), ("Claude", "claude")):
+        d = snap.get(key) or {}
+        pct = _pct_or_none(d, window)
+        if pct is None:
+            continue
+        if pct > max_pct:
+            max_pct = pct
+            max_labels = [label]
+        elif pct == max_pct and pct > 0:
+            max_labels.append(label)
+
+    if len(max_labels) == 1:
+        return max_pct, max_labels[0]
+    if len(max_labels) > 1:
+        return max_pct, " + ".join(max_labels)
+    return max_pct, "AI"
+
+
 def _reset_str(d, window) -> "str | None":
     """Format the time-to-reset for one window as a human-readable
     countdown ('3h03m', '15h35m'), live-recomputed from `reset_at`
@@ -574,23 +595,23 @@ class TrayApp:
         # stale data would notify based on the user's yesterday-state every
         # time the tray polls, which is alarm fatigue without new info —
         # the expired-state hint already surfaces in the icon and menu.
-        max_p = 0.0
-        max_s = 0.0
-        for key in ("codex", "claude"):
-            d = snap.get(key) or {}
-            p = _pct_or_none(d, "primary") or 0.0
-            s = _pct_or_none(d, "secondary") or 0.0
-            max_p = max(max_p, p)
-            max_s = max(max_s, s)
+        max_p, primary_provider = _window_max_provider(snap, "primary")
+        max_s, secondary_provider = _window_max_provider(snap, "secondary")
 
         if max_p >= THRESHOLD_PRIMARY_PCT and not self._notified_primary:
-            _notify("AI quota warning", f"5-hour window at {max_p:.0f}%")
+            _notify(
+                f"{primary_provider} quota warning",
+                f"5-hour window at {max_p:.0f}%",
+            )
             self._notified_primary = True
         elif max_p < THRESHOLD_PRIMARY_PCT - HYSTERESIS_PCT:
             self._notified_primary = False
 
         if max_s >= THRESHOLD_SECONDARY_PCT and not self._notified_secondary:
-            _notify("AI quota warning", f"Weekly window at {max_s:.0f}%")
+            _notify(
+                f"{secondary_provider} quota warning",
+                f"Weekly window at {max_s:.0f}%",
+            )
             self._notified_secondary = True
         elif max_s < THRESHOLD_SECONDARY_PCT - HYSTERESIS_PCT:
             self._notified_secondary = False

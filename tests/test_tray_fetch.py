@@ -119,6 +119,45 @@ class TestDoFetchExceptionHandling:
         assert app.snapshot == snap
         assert apply_calls["count"] == 1
 
+    def test_threshold_notification_names_codex_provider(self):
+        app = TrayApp(interval=300)
+        snap = {
+            "codex": {"primary": {"used_percent": 82}},
+            "claude": {"primary": {"used_percent": 17}},
+        }
+
+        with patch("tray._notify") as notify:
+            app._check_thresholds(snap)
+
+        notify.assert_called_once_with("Codex quota warning", "5-hour window at 82%")
+
+    def test_threshold_notification_names_claude_provider(self):
+        app = TrayApp(interval=300)
+        snap = {
+            "codex": {"secondary": {"used_percent": 30}},
+            "claude": {"secondary": {"used_percent": 91}},
+        }
+
+        with patch("tray._notify") as notify:
+            app._check_thresholds(snap)
+
+        notify.assert_called_once_with("Claude quota warning", "Weekly window at 91%")
+
+    def test_threshold_notification_names_both_providers_on_tie(self):
+        app = TrayApp(interval=300)
+        snap = {
+            "codex": {"primary": {"used_percent": 80}},
+            "claude": {"primary": {"used_percent": 80}},
+        }
+
+        with patch("tray._notify") as notify:
+            app._check_thresholds(snap)
+
+        notify.assert_called_once_with(
+            "Codex + Claude quota warning",
+            "5-hour window at 80%",
+        )
+
     def test_stderr_none_does_not_crash_on_error(self, monkeypatch):
         """Regression: under `pythonw.exe`, `sys.stderr` can be None.
         The except branch's `stderr.write(None)` would itself raise
