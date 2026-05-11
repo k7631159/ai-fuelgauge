@@ -36,4 +36,4 @@ ai-fuelgauge = "ai_fuelgauge:main_entry"
 
 # Single-file layout: modules are at the repo root.
 [tool.setuptools]
-py-modules = ["ai_fuelgauge", "tray"]
+py-modules = ["ai_fuelgauge", "tray", "hud"]

@@ -13,6 +13,7 @@ Invocation:
   python ai_fuelgauge.py --no-cache       Force refresh
   python ai_fuelgauge.py --debug          Dump raw responses for debugging
   python ai_fuelgauge.py --no-color       Disable ANSI colors
+  python ai_fuelgauge.py --hud            Floating desktop HUD
 
 Credential resolution:
   Codex:  ~/.codex/auth.json handled by `codex app-server`
@@ -246,11 +247,30 @@ def _normalize_codex_window(w: "dict | None", now: int) -> dict:
 
 def _find_codex_bin() -> str | None:
     """Locate the codex CLI binary."""
-    for name in ("codex.cmd", "codex.exe", "codex"):
+    # On Windows, prefer the real Codex executable over npm/cmd shims. The
+    # Node-generated `codex.cmd` wrapper can flash a console window when the
+    # tray polls in the background.
+    names = ("codex.exe", "codex.cmd", "codex") if sys.platform == "win32" else ("codex", "codex.exe", "codex.cmd")
+    for name in names:
         p = shutil.which(name)
         if p:
             return p
     return None
+
+
+def _hidden_subprocess_startup_kwargs() -> dict:
+    """Return Windows subprocess kwargs that suppress console flashes."""
+    if sys.platform != "win32":
+        return {}
+    kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW}
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        kwargs["startupinfo"] = startupinfo
+    except AttributeError:
+        pass
+    return kwargs
 
 
 def probe_codex_fresh(debug: bool = False) -> dict | None:
@@ -271,9 +291,8 @@ def probe_codex_fresh(debug: bool = False) -> dict | None:
         bufsize=0,
         shell=False,
     )
-    # Suppress the console window that Windows creates for spawned processes.
-    if sys.platform == "win32":
-        popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    # Suppress console windows from Codex CLI / npm shims during tray polling.
+    popen_kwargs.update(_hidden_subprocess_startup_kwargs())
     try:
         proc = subprocess.Popen([codex_bin, "app-server"], **popen_kwargs)
     except Exception as e:
@@ -609,8 +628,7 @@ def _trigger_claude_auth_refresh() -> bool:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    if sys.platform == "win32":
-        popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    popen_kwargs.update(_hidden_subprocess_startup_kwargs())
     try:
         res = subprocess.run(
             [claude_bin, "auth", "status"],
@@ -852,9 +870,24 @@ def load_cache(ttl: int) -> dict | None:
 
 def save_cache(data: dict) -> None:
     try:
+        import tempfile
         CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         data = {**data, "_cached_at": int(time.time())}
-        CACHE_FILE.write_text(json.dumps(data, default=str), encoding="utf-8")
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(CACHE_FILE.parent),
+            prefix=CACHE_FILE.name + ".",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(data, default=str))
+            os.replace(tmp_path, CACHE_FILE)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     except Exception:
         pass
 
@@ -1291,6 +1324,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--no-color", action="store_true")
     ap.add_argument("--tray", action="store_true",
                     help="Run as system tray app (install deps: pip install -r requirements-tray.txt)")
+    ap.add_argument("--hud", action="store_true",
+                    help="Run the floating HUD overlay")
     ap.add_argument("--interval", type=interval_seconds, default=300,
                     help="Tray poll interval in seconds (default: 300, minimum: 1)")
     ap.add_argument("--no-detach", action="store_true",
@@ -1306,6 +1341,14 @@ def main(argv: list[str]) -> int:
             sys.stderr.write("Install with: pip install --user -r requirements-tray.txt\n")
             return 2
         return run_tray(interval=args.interval, detach=not args.no_detach)
+
+    if args.hud:
+        try:
+            from hud import run_hud
+        except ImportError as e:
+            sys.stderr.write(f"HUD mode failed to load: {e}\n")
+            return 2
+        return run_hud(interval=args.interval)
 
     use_color = (not args.no_color) and sys.stdout.isatty()
 

@@ -82,6 +82,7 @@ python ai_fuelgauge.py --debug         # 把原始 API 回應全部 dump 出來
 ```bash
 python ai_fuelgauge.py --tray          # 一直跑，直到你右鍵 → Quit
 python ai_fuelgauge.py --tray --interval 600   # 每 10 分鐘 poll 一次
+python ai_fuelgauge.py --hud           # 小型浮動 HUD，不一定要開 tray
 ```
 
 Tray 圖示會顯示一個彩色圓點，反映你兩個訂閱中使用率最高的那一邊。右鍵可以看
@@ -95,6 +96,15 @@ Claude 認證失敗時 tray 會顯示不同 label —— `auth`（refresh 失敗
 `$CLAUDE_CODE_OAUTH_TOKEN`）—— 並在右鍵選單給你具體該怎麼修，不用翻 log。
 Token 過期但 24 小時內有成功 probe 過時，tray 會把那次的數值標成 stale 繼續
 顯示；window 已 reset 過的 bar 會明確標出已 omit，並另外加一行選單給回復動作。
+
+Tray 選單也可以 show/hide 一個小型 floating HUD。HUD 預設是 compact，只顯示
+Codex 5h + Claude 5h；點一下展開成 Codex 5h/week + Claude 5h/week，再點一下
+回 compact。拖曳 HUD 可以移動位置，位置會記住。在 HUD 上滾滑鼠滾輪可以調
+透明度；右鍵則有 Refresh / Toggle / Opacity presets / Quit。從 tray 開啟時，HUD
+是同一份 tray quota state 的另一種呈現：平常更新會重畫 tray snapshot，HUD 上的
+Refresh 則會請 tray 先 fetch 再重畫，不會自己再跑第二套獨立 probe loop。
+
+![Floating HUD expanded view with sample quota data](docs/assets/hud-expanded.png)
 
 通知在 Windows 用 `winotify`，其他平台用 `plyer`。
 

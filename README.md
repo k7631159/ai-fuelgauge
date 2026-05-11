@@ -90,6 +90,7 @@ can just type `usage`.
 ```bash
 python ai_fuelgauge.py --tray          # runs until you right-click → Quit
 python ai_fuelgauge.py --tray --interval 600   # poll every 10 min
+python ai_fuelgauge.py --hud           # small floating overlay, no tray required
 ```
 
 The tray icon shows a coloured dot reflecting your highest utilization across
@@ -106,6 +107,17 @@ fix without you having to dig into logs. When the token has expired
 but a successful Claude probe from the last 24 h is on file, the tray
 keeps showing those numbers tagged as stale; rolled-over windows are
 omitted explicitly, and an extra menu row carries the recovery action.
+
+The tray menu can also show/hide a small floating HUD. The HUD starts compact
+with Codex 5h + Claude 5h; click it once to expand to Codex 5h/week +
+Claude 5h/week, and click again to return to compact. Drag the HUD to move it;
+the position is remembered. Use the mouse wheel over the HUD to adjust opacity,
+or right-click the HUD for Refresh / Toggle / Opacity presets / Quit.
+When launched from the tray, the HUD is another view of the same tray quota
+state: normal updates render the tray snapshot, and HUD Refresh asks the tray
+to fetch before redrawing instead of running an independent probe loop.
+
+![Floating HUD expanded view with sample quota data](docs/assets/hud-expanded.png)
 
 Notifications use Windows toast (`winotify`) or `plyer` elsewhere.
 

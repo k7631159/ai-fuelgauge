@@ -79,3 +79,58 @@ class TestCodexSubprocessCleanup:
         fake_proc.terminate.assert_called_once()
         fake_proc.kill.assert_called_once()
         assert result is not None  # returned a dict, didn't raise
+
+
+class TestCodexBinarySelection:
+    def test_windows_prefers_exe_over_cmd_shim(self, monkeypatch):
+        monkeypatch.setattr(ai_fuelgauge.sys, "platform", "win32")
+
+        def fake_which(name):
+            return {
+                "codex.exe": r"C:\Codex\codex.exe",
+                "codex.cmd": r"C:\Node\codex.cmd",
+                "codex": r"C:\Node\codex.CMD",
+            }.get(name)
+
+        monkeypatch.setattr(ai_fuelgauge.shutil, "which", fake_which)
+
+        assert ai_fuelgauge._find_codex_bin() == r"C:\Codex\codex.exe"
+
+    def test_windows_falls_back_to_cmd_when_exe_missing(self, monkeypatch):
+        monkeypatch.setattr(ai_fuelgauge.sys, "platform", "win32")
+
+        def fake_which(name):
+            return {"codex.cmd": r"C:\Node\codex.cmd"}.get(name)
+
+        monkeypatch.setattr(ai_fuelgauge.shutil, "which", fake_which)
+
+        assert ai_fuelgauge._find_codex_bin() == r"C:\Node\codex.cmd"
+
+    def test_non_windows_prefers_plain_codex(self, monkeypatch):
+        monkeypatch.setattr(ai_fuelgauge.sys, "platform", "linux")
+
+        def fake_which(name):
+            return {
+                "codex": "/usr/local/bin/codex",
+                "codex.exe": "/unexpected/codex.exe",
+            }.get(name)
+
+        monkeypatch.setattr(ai_fuelgauge.shutil, "which", fake_which)
+
+        assert ai_fuelgauge._find_codex_bin() == "/usr/local/bin/codex"
+
+
+class TestHiddenSubprocessStartupKwargs:
+    def test_non_windows_returns_empty_kwargs(self, monkeypatch):
+        monkeypatch.setattr(ai_fuelgauge.sys, "platform", "linux")
+
+        assert ai_fuelgauge._hidden_subprocess_startup_kwargs() == {}
+
+    def test_windows_includes_create_no_window(self, monkeypatch):
+        monkeypatch.setattr(ai_fuelgauge.sys, "platform", "win32")
+
+        kwargs = ai_fuelgauge._hidden_subprocess_startup_kwargs()
+
+        assert kwargs["creationflags"] == subprocess.CREATE_NO_WINDOW
+        if hasattr(subprocess, "STARTUPINFO"):
+            assert "startupinfo" in kwargs

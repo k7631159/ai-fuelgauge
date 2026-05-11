@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -166,7 +167,12 @@ def _snapshot() -> dict:
     # used the next time the token has expired. Only writes on success;
     # no-ops on error / 4xx / no parsed windows.
     afg._save_last_good_claude(claude)
-    return {"codex": codex, "claude": claude}
+    snap = {"codex": codex, "claude": claude}
+    # Tray-launched HUD runs as a cache-only consumer so it doesn't double the
+    # live Codex/Claude probes. Keep the shared cache fresh after each tray
+    # fetch so the HUD can render the same snapshot the tray icon/menu uses.
+    afg.save_cache(snap)
+    return snap
 
 
 def _max_pct(snap: dict) -> float:
@@ -475,6 +481,10 @@ class TrayApp:
         # clicks (or a poller tick racing a manual refresh) skip instead of
         # stacking concurrent probes against the Codex / Claude APIs.
         self._fetch_lock = threading.Lock()
+        self._hud_app = None
+        self._hud_thread = None
+        self._hud_lock = threading.Lock()
+        self._hud_stop_requested = False
 
     # --- menu item text getters (callables so they re-evaluate on menu open) ---
     # When the probe is in a known error state (401 / 429 / offline / login /
@@ -554,15 +564,97 @@ class TrayApp:
     def _refresh_now(self, _icon=None, _item=None):
         threading.Thread(target=self._do_fetch, daemon=True).start()
 
+    def _hud_running(self) -> bool:
+        return self._hud_thread is not None and self._hud_thread.is_alive()
+
+    def _hud_label(self, _item) -> str:
+        return "Hide HUD" if self._hud_running() else "Show HUD"
+
+    def _toggle_hud(self, _icon=None, _item=None):
+        if self._hud_running():
+            self._stop_hud()
+        else:
+            self._start_hud()
+        if self.icon:
+            try:
+                self.icon.update_menu()
+            except Exception:
+                pass
+
+    def _start_hud(self) -> None:
+        with self._hud_lock:
+            if self._hud_running():
+                return
+            self._hud_stop_requested = False
+            thread = threading.Thread(target=self._run_hud, daemon=True)
+            self._hud_thread = thread
+            thread.start()
+
+    def _run_hud(self) -> None:
+        try:
+            from hud import HudApp
+            app = HudApp(
+                interval=self.interval,
+                cache_only=True,
+                snapshot_loader=self._snapshot_for_hud,
+                refresh_loader=self._refresh_snapshot_for_hud,
+            )
+            with self._hud_lock:
+                self._hud_app = app
+                stop_requested = self._hud_stop_requested
+            if stop_requested:
+                app.root.after(0, app.quit)
+            app.run()
+        except Exception as e:
+            try:
+                if sys.stderr is not None:
+                    sys.stderr.write(f"HUD failed: {e}\n")
+            except Exception:
+                pass
+        finally:
+            with self._hud_lock:
+                self._hud_app = None
+                self._hud_thread = None
+                self._hud_stop_requested = False
+
+    def _stop_hud(self) -> None:
+        with self._hud_lock:
+            app = self._hud_app
+            if app is None:
+                self._hud_stop_requested = self._hud_thread is not None
+        if app is None:
+            return
+        try:
+            app.root.after(0, app.quit)
+        except Exception:
+            pass
+
+    def _snapshot_for_hud(self) -> dict:
+        if self.snapshot:
+            return dict(self.snapshot)
+        cache = afg.load_cache(afg.CACHE_TTL_SECONDS)
+        if isinstance(cache, dict):
+            cache = dict(cache)
+            cache["_from_cache"] = True
+            return cache
+        return {"codex": {}, "claude": {}, "_from_cache": False}
+
+    def _refresh_snapshot_for_hud(self) -> dict:
+        self._do_fetch(blocking=True)
+        return self._snapshot_for_hud()
+
     def _quit(self, _icon=None, _item=None):
         self._stop.set()
+        self._stop_hud()
         if self.icon:
             self.icon.stop()
 
     # --- core ---
-    def _do_fetch(self):
-        if not self._fetch_lock.acquire(blocking=False):
-            return  # another fetch is in flight — skip to avoid overlap
+    def _do_fetch(self, blocking: bool = False) -> bool:
+        if not self._fetch_lock.acquire(blocking=blocking):
+            # False is only reachable in the non-blocking menu/poller path.
+            # HUD-triggered refresh uses blocking=True inside a worker thread.
+            return False  # another fetch is in flight — skip to avoid overlap
         # The whole fetch + post-processing runs under one try/except. The
         # previous `try/else` placed `_apply_to_icon()` in the `else` branch
         # OUTSIDE the try — any Pillow/pystray backend error raised from
@@ -588,6 +680,7 @@ class TrayApp:
                 pass
         finally:
             self._fetch_lock.release()
+        return True
 
     def _check_thresholds(self, snap: dict) -> None:
         # Threshold-crossing notifications intentionally read only the live
@@ -650,6 +743,7 @@ class TrayApp:
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Refresh now", self._refresh_now),
+            pystray.MenuItem(self._hud_label, self._toggle_hud),
             pystray.MenuItem("Quit", self._quit),
         )
 

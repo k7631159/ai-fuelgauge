@@ -10,7 +10,7 @@ The fix: widen the `try` to cover all of `_snapshot` + thresholds +
 apply-to-icon, so any error is logged and the fetch lock is always
 released cleanly.
 """
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -119,6 +119,19 @@ class TestDoFetchExceptionHandling:
         assert app.snapshot == snap
         assert apply_calls["count"] == 1
 
+    def test_snapshot_writes_shared_cache_for_hud(self):
+        codex = {"primary": {"used_percent": 25}}
+        claude = {"primary": {"used_percent": 35}}
+
+        with patch("tray.afg.probe_codex_fresh", return_value=codex):
+            with patch("tray.afg.probe_claude_quota", return_value=claude):
+                with patch("tray.afg._save_last_good_claude"):
+                    with patch("tray.afg.save_cache") as save_cache:
+                        snap = __import__("tray")._snapshot()
+
+        assert snap == {"codex": codex, "claude": claude}
+        save_cache.assert_called_once_with(snap)
+
     def test_threshold_notification_names_codex_provider(self):
         app = TrayApp(interval=300)
         snap = {
@@ -178,3 +191,126 @@ class TestDoFetchExceptionHandling:
 
         assert app._fetch_lock.acquire(blocking=False) is True
         app._fetch_lock.release()
+
+    def test_hud_label_reflects_process_state(self):
+        app = TrayApp(interval=300)
+
+        assert app._hud_label(None) == "Show HUD"
+
+        class RunningThread:
+            def is_alive(self):
+                return True
+
+        app._hud_thread = RunningThread()
+        assert app._hud_label(None) == "Hide HUD"
+
+    def test_start_hud_runs_in_process_thread(self):
+        app = TrayApp(interval=123)
+
+        class FakeThread:
+            def __init__(self, target, daemon):
+                self.target = target
+                self.daemon = daemon
+                self.started = False
+
+            def is_alive(self):
+                return False
+
+            def start(self):
+                self.started = True
+
+        created = []
+
+        def make_thread(*args, **kwargs):
+            thread = FakeThread(*args, **kwargs)
+            created.append(thread)
+            return thread
+
+        with patch("tray.threading.Thread", side_effect=make_thread):
+            with patch("tray.subprocess.Popen") as popen:
+                app._start_hud()
+
+        popen.assert_not_called()
+        assert created
+        assert created[0].target == app._run_hud
+        assert created[0].daemon is True
+        assert created[0].started is True
+        assert app._hud_thread is created[0]
+
+    def test_stop_hud_schedules_in_process_window_quit(self):
+        app = TrayApp(interval=300)
+        root = MagicMock()
+        fake_app = MagicMock(root=root, quit=MagicMock())
+        app._hud_app = fake_app
+
+        app._stop_hud()
+
+        root.after.assert_called_once_with(0, fake_app.quit)
+
+    def test_stop_hud_before_window_exists_sets_pending_stop(self):
+        app = TrayApp(interval=300)
+
+        class StartingThread:
+            def is_alive(self):
+                return True
+
+        app._hud_thread = StartingThread()
+        app._hud_app = None
+
+        app._stop_hud()
+
+        assert app._hud_stop_requested is True
+
+    def test_snapshot_for_hud_uses_tray_snapshot_before_cache(self):
+        app = TrayApp(interval=300)
+        app.snapshot = {"codex": {"primary": {"used_percent": 22}}}
+
+        with patch("tray.afg.load_cache") as load_cache:
+            result = app._snapshot_for_hud()
+
+        assert result == app.snapshot
+        assert result is not app.snapshot
+
+        load_cache.assert_not_called()
+
+    def test_snapshot_for_hud_falls_back_to_shared_cache(self):
+        app = TrayApp(interval=300)
+        cache = {"codex": {"primary": {"used_percent": 33}}}
+
+        with patch("tray.afg.load_cache", return_value=cache):
+            assert app._snapshot_for_hud() == {
+                "codex": {"primary": {"used_percent": 33}},
+                "_from_cache": True,
+            }
+
+    def test_refresh_snapshot_for_hud_triggers_tray_fetch(self):
+        app = TrayApp(interval=300)
+        snap = {"codex": {"primary": {"used_percent": 44}}}
+
+        def fake_fetch(**_kwargs):
+            app.snapshot = snap
+
+        with patch.object(app, "_do_fetch", side_effect=fake_fetch) as do_fetch:
+            assert app._refresh_snapshot_for_hud() == snap
+
+        do_fetch.assert_called_once_with(blocking=True)
+
+    def test_run_hud_passes_tray_snapshot_loaders(self):
+        app = TrayApp(interval=123)
+        captured = {}
+
+        class FakeHudApp:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.root = MagicMock()
+
+            def run(self):
+                pass
+
+        with patch("hud.HudApp", FakeHudApp):
+            app._run_hud()
+
+        assert captured["interval"] == 123
+        assert captured["cache_only"] is True
+        assert captured["snapshot_loader"] == app._snapshot_for_hud
+        assert captured["refresh_loader"] == app._refresh_snapshot_for_hud
