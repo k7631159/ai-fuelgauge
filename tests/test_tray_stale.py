@@ -164,13 +164,13 @@ class TestMenuStaleLabels:
     def test_5h_stale_label_when_valid(self, isolated_paths):
         _seed_last_good(isolated_paths, age_seconds=3 * 3600)
         app = TrayApp(interval=300)
-        app.snapshot = {"codex": {}, "claude": {"error": "auth-expired-no-refresh"}}
+        app.quota_state._snapshot = {"codex": {}, "claude": {"error": "auth-expired-no-refresh"}}
         assert app._claude_5h(None) == "Claude 5h: 29% (3h stale)"
 
     def test_week_stale_label_when_valid(self, isolated_paths):
         _seed_last_good(isolated_paths, age_seconds=3 * 3600)
         app = TrayApp(interval=300)
-        app.snapshot = {"codex": {}, "claude": {"error": "auth-expired-no-refresh"}}
+        app.quota_state._snapshot = {"codex": {}, "claude": {"error": "auth-expired-no-refresh"}}
         assert app._claude_week(None) == "Claude week: 15% (3h stale)"
 
     def test_5h_window_reset_label(self, isolated_paths):
@@ -181,7 +181,7 @@ class TestMenuStaleLabels:
             age_seconds=6 * 3600,
         )
         app = TrayApp(interval=300)
-        app.snapshot = {"codex": {}, "claude": {"error": "auth-expired-no-refresh"}}
+        app.quota_state._snapshot = {"codex": {}, "claude": {"error": "auth-expired-no-refresh"}}
         assert app._claude_5h(None) == "Claude 5h: -- (window reset)"
 
     def test_week_window_reset_label(self, isolated_paths):
@@ -192,20 +192,20 @@ class TestMenuStaleLabels:
             age_seconds=2 * 3600,
         )
         app = TrayApp(interval=300)
-        app.snapshot = {"codex": {}, "claude": {"error": "auth-expired-no-refresh"}}
+        app.quota_state._snapshot = {"codex": {}, "claude": {"error": "auth-expired-no-refresh"}}
         assert app._claude_week(None) == "Claude week: -- (window reset)"
 
     def test_double_dash_when_no_last_good(self, isolated_paths):
         """Cache miss with proactive-expiry: both menu rows show plain `--`."""
         app = TrayApp(interval=300)
-        app.snapshot = {"codex": {}, "claude": {"error": "auth-expired-no-refresh"}}
+        app.quota_state._snapshot = {"codex": {}, "claude": {"error": "auth-expired-no-refresh"}}
         assert app._claude_5h(None) == "Claude 5h: --"
         assert app._claude_week(None) == "Claude week: --"
 
     def test_envtok_uses_stale_too(self, isolated_paths):
         _seed_last_good(isolated_paths, age_seconds=2 * 3600)
         app = TrayApp(interval=300)
-        app.snapshot = {"codex": {}, "claude": {"error": "env-token-expired"}}
+        app.quota_state._snapshot = {"codex": {}, "claude": {"error": "env-token-expired"}}
         assert "29%" in app._claude_5h(None)
         assert "stale" in app._claude_5h(None)
 
@@ -213,20 +213,20 @@ class TestMenuStaleLabels:
 class TestMenuHintRow:
     def test_hint_visible_on_proactive_expiry(self):
         app = TrayApp(interval=300)
-        app.snapshot = {"codex": {}, "claude": {"error": "auth-expired-no-refresh"}}
+        app.quota_state._snapshot = {"codex": {}, "claude": {"error": "auth-expired-no-refresh"}}
         assert app._claude_hint_visible(None) is True
         assert "token expired" in app._claude_hint_text(None)
         assert "claude" in app._claude_hint_text(None).lower()
 
     def test_hint_visible_on_env_token_expired(self):
         app = TrayApp(interval=300)
-        app.snapshot = {"codex": {}, "claude": {"error": "env-token-expired"}}
+        app.quota_state._snapshot = {"codex": {}, "claude": {"error": "env-token-expired"}}
         assert app._claude_hint_visible(None) is True
         assert "$CLAUDE_CODE_OAUTH_TOKEN" in app._claude_hint_text(None)
 
     def test_hint_hidden_on_healthy(self):
         app = TrayApp(interval=300)
-        app.snapshot = {
+        app.quota_state._snapshot = {
             "codex": {},
             "claude": {"primary": {"used_percent": 29.0}},
         }
@@ -237,7 +237,7 @@ class TestMenuHintRow:
         the existing menu rows already carry the actionable text — adding
         the hint row would duplicate. Keep hidden."""
         app = TrayApp(interval=300)
-        app.snapshot = {"codex": {}, "claude": {"status": 401}}
+        app.quota_state._snapshot = {"codex": {}, "claude": {"status": 401}}
         assert app._claude_hint_visible(None) is False
 
     def test_hint_visible_on_reactive_envtok_401(self, isolated_paths):
@@ -249,7 +249,7 @@ class TestMenuHintRow:
         sees stale numbers with no recovery action."""
         _seed_last_good(isolated_paths, age_seconds=2 * 3600)
         app = TrayApp(interval=300)
-        app.snapshot = {
+        app.quota_state._snapshot = {
             "codex": {},
             "claude": {"status": 401, "_env_token_mode": True},
         }

@@ -223,7 +223,7 @@ class TestSummaryLineWithErrors:
 class TestMenuGetters:
     def test_claude_5h_menu_shows_full_error(self):
         app = TrayApp(interval=300)
-        app.snapshot = {"codex": {}, "claude": {"status": 401}}
+        app.quota_state._snapshot = {"codex": {}, "claude": {"status": 401}}
         label = app._claude_5h(None)
         assert "Claude" in label
         assert "auth" in label.lower() or "expired" in label.lower()
@@ -234,13 +234,13 @@ class TestMenuGetters:
         dash is consistent with the `Claude 5h: -- (window reset)` style
         used in the stale-bar fallback paths."""
         app = TrayApp(interval=300)
-        app.snapshot = {"codex": {}, "claude": {"status": 401}}
+        app.quota_state._snapshot = {"codex": {}, "claude": {"status": 401}}
         label = app._claude_week(None)
         assert label == "Claude week: --"
 
     def test_codex_5h_menu_shows_not_found_message(self):
         app = TrayApp(interval=300)
-        app.snapshot = {"codex": {"error": "codex-not-in-path"}, "claude": {}}
+        app.quota_state._snapshot = {"codex": {"error": "codex-not-in-path"}, "claude": {}}
         label = app._codex_5h(None)
         assert "Codex" in label
         assert "PATH" in label or "not found" in label.lower()
@@ -248,7 +248,7 @@ class TestMenuGetters:
     def test_menu_shows_percent_on_success(self):
         """Regression guard: happy path menu text unchanged."""
         app = TrayApp(interval=300)
-        app.snapshot = {
+        app.quota_state._snapshot = {
             "codex": {"primary": {"used_percent": 42.0}},
             "claude": {"primary": {"used_percent": 17.5}},
         }

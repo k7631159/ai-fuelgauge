@@ -60,6 +60,7 @@ def _notify(title: str, message: str) -> None:
 # Reuse probe functions from sibling module.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ai_fuelgauge as afg  # noqa: E402
+import quota_state  # noqa: E402
 from windows_detach import reexec_detached_on_windows as _reexec_detached_on_windows  # noqa: E402
 
 
@@ -116,24 +117,7 @@ def _make_icon(max_pct: float, size: int = 64) -> "Image.Image":
 
 
 def _snapshot() -> dict:
-    codex = afg.probe_codex_fresh()
-    if not codex or codex.get("error"):
-        fallback = afg.read_codex_quota()
-        if fallback:
-            codex = fallback
-            if isinstance(codex, dict):
-                codex["_source"] = "sqlite-snapshot"
-    claude = afg.probe_claude_quota()
-    # Mirror the CLI: each successful probe updates the stale-bar fallback
-    # used the next time the token has expired. Only writes on success;
-    # no-ops on error / 4xx / no parsed windows.
-    afg._save_last_good_claude(claude)
-    snap = {"codex": codex, "claude": claude}
-    # Tray-launched HUD runs as a cache-only consumer so it doesn't double the
-    # live Codex/Claude probes. Keep the shared cache fresh after each tray
-    # fetch so the HUD can render the same snapshot the tray icon/menu uses.
-    afg.save_cache(snap)
-    return snap
+    return quota_state.probe_snapshot()
 
 
 def _max_pct(snap: dict) -> float:
@@ -433,7 +417,7 @@ def _reset_str(d, window) -> "str | None":
 class TrayApp:
     def __init__(self, interval: int = DEFAULT_INTERVAL_SECONDS) -> None:
         self.interval = interval
-        self.snapshot: dict = {}
+        self.quota_state = quota_state.QuotaStateService()
         self._notified_primary = False
         self._notified_secondary = False
         self.icon: "pystray.Icon | None" = None
@@ -445,6 +429,7 @@ class TrayApp:
         self._hud_app = None
         self._hud_thread = None
         self._hud_lock = threading.Lock()
+        self._hud_instance_lock_fd: "int | None" = None
         self._hud_stop_requested = False
 
     # --- menu item text getters (callables so they re-evaluate on menu open) ---
@@ -453,7 +438,7 @@ class TrayApp:
     # falls back to its normal "?" so the menu doesn't duplicate the same
     # error text on two adjacent rows.
     def _codex_5h(self, _item):
-        d = self.snapshot.get("codex") or {}
+        d = self._snapshot_view().get("codex") or {}
         err_info = _classify_probe_error(d, "Codex")
         if err_info is not None:
             return err_info[1]
@@ -464,7 +449,7 @@ class TrayApp:
         return f"Codex 5h: {p:.0f}% (resets {reset})" if reset else f"Codex 5h: {p:.0f}%"
 
     def _codex_week(self, _item):
-        d = self.snapshot.get("codex") or {}
+        d = self._snapshot_view().get("codex") or {}
         if _classify_probe_error(d, "Codex") is not None:
             return "Codex week: -"
         p = _pct_or_none(d, "secondary")
@@ -474,7 +459,7 @@ class TrayApp:
         return f"Codex week: {p:.0f}% (resets {reset})" if reset else f"Codex week: {p:.0f}%"
 
     def _claude_5h(self, _item):
-        d = self.snapshot.get("claude") or {}
+        d = self._snapshot_view().get("claude") or {}
         err_info = _classify_probe_error(d, "Claude")
         if err_info is not None:
             # Proactive-expiry: render stale-or-omitted bar so the menu
@@ -490,7 +475,7 @@ class TrayApp:
         return f"Claude 5h: {p:.0f}% (resets {reset})" if reset else f"Claude 5h: {p:.0f}%"
 
     def _claude_week(self, _item):
-        d = self.snapshot.get("claude") or {}
+        d = self._snapshot_view().get("claude") or {}
         err_info = _classify_probe_error(d, "Claude")
         if err_info is not None:
             if err_info[0] in ("expired", "envtok"):
@@ -508,14 +493,14 @@ class TrayApp:
     # as `envtok` too, and must keep the env-var replacement hint or the
     # user sees stale numbers with no recovery instruction.
     def _claude_hint_visible(self, _item) -> bool:
-        d = self.snapshot.get("claude") or {}
+        d = self._snapshot_view().get("claude") or {}
         err_info = _classify_probe_error(d, "Claude")
         if err_info is None:
             return False
         return err_info[0] in ("expired", "envtok")
 
     def _claude_hint_text(self, _item) -> str:
-        d = self.snapshot.get("claude") or {}
+        d = self._snapshot_view().get("claude") or {}
         err_info = _classify_probe_error(d, "Claude")
         if err_info is not None and err_info[0] == "envtok":
             return "Claude: replace $CLAUDE_CODE_OAUTH_TOKEN"
@@ -528,14 +513,105 @@ class TrayApp:
     def _hud_running(self) -> bool:
         return self._hud_thread is not None and self._hud_thread.is_alive()
 
+    def _external_hud_running(self) -> bool:
+        if self._hud_running():
+            return False
+        try:
+            from hud import acquire_hud_lock, release_hud_lock
+            lock_fd = acquire_hud_lock()
+        except Exception:
+            return False
+        if lock_fd is None:
+            return True
+        try:
+            release_hud_lock(lock_fd)
+        except Exception:
+            pass
+        return False
+
     def _hud_label(self, _item) -> str:
-        return "Hide HUD" if self._hud_running() else "Show HUD"
+        if self._hud_running():
+            return "Hide HUD"
+        if self._external_hud_running():
+            return "Close HUD"
+        return "Show HUD"
+
+    def _hud_action_enabled(self, _item) -> bool:
+        return True
 
     def _toggle_hud(self, _icon=None, _item=None):
         if self._hud_running():
             self._stop_hud()
+            self._save_hud_visibility(False)
+        elif self._external_hud_running():
+            self._request_external_hud_close()
+            self._save_hud_visibility(False)
+            self._watch_external_hud_close()
         else:
             self._start_hud()
+            self._save_hud_visibility(True)
+        self._update_menu_safely()
+
+    def _request_external_hud_close(self) -> None:
+        try:
+            from hud import request_hud_close
+            request_hud_close()
+        except Exception:
+            pass
+
+    def _save_hud_visibility(self, visible: bool) -> None:
+        try:
+            from hud import save_visibility
+            save_visibility(visible)
+        except Exception:
+            pass
+
+    def _load_hud_visibility(self) -> bool:
+        try:
+            from hud import load_visibility
+            return load_visibility()
+        except Exception:
+            return False
+
+    def _restore_hud_visibility(self) -> None:
+        if self._load_hud_visibility():
+            if self._external_hud_running():
+                self._request_external_hud_close()
+                threading.Thread(
+                    target=self._start_hud_after_external_close,
+                    daemon=True,
+                ).start()
+            else:
+                self._start_hud()
+        self._update_menu_safely()
+
+    def _start_hud_after_external_close(self, timeout: float = 5.0) -> None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if not self._external_hud_running():
+                self._start_hud()
+                self._update_menu_safely()
+                return
+            time.sleep(0.2)
+        self._update_menu_safely()
+
+    def _watch_external_hud_close(self, timeout: float = 5.0) -> None:
+        threading.Thread(
+            target=self._wait_for_external_hud_close,
+            args=(timeout,),
+            daemon=True,
+        ).start()
+
+    def _wait_for_external_hud_close(self, timeout: float = 5.0) -> None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if not self._external_hud_running():
+                self._update_menu_safely()
+                return
+            time.sleep(0.2)
+        self._update_menu_safely()
+
+    def _update_menu_safely(self) -> None:
         if self.icon:
             try:
                 self.icon.update_menu()
@@ -546,12 +622,18 @@ class TrayApp:
         with self._hud_lock:
             if self._hud_running():
                 return
+            from hud import acquire_hud_lock
+            lock_fd = acquire_hud_lock()
+            if lock_fd is None:
+                return
             self._hud_stop_requested = False
+            self._hud_instance_lock_fd = lock_fd
             thread = threading.Thread(target=self._run_hud, daemon=True)
             self._hud_thread = thread
             thread.start()
 
     def _run_hud(self) -> None:
+        closed_normally = False
         try:
             from hud import HudApp
             app = HudApp(
@@ -566,6 +648,7 @@ class TrayApp:
             if stop_requested:
                 app.root.after(0, app.quit)
             app.run()
+            closed_normally = True
         except Exception as e:
             try:
                 if sys.stderr is not None:
@@ -574,9 +657,20 @@ class TrayApp:
                 pass
         finally:
             with self._hud_lock:
+                lock_fd = self._hud_instance_lock_fd
                 self._hud_app = None
                 self._hud_thread = None
+                self._hud_instance_lock_fd = None
                 self._hud_stop_requested = False
+            if lock_fd is not None:
+                try:
+                    from hud import release_hud_lock
+                    release_hud_lock(lock_fd)
+                except Exception:
+                    pass
+            if closed_normally and not self._stop.is_set():
+                self._save_hud_visibility(False)
+            self._update_menu_safely()
 
     def _stop_hud(self) -> None:
         with self._hud_lock:
@@ -591,14 +685,10 @@ class TrayApp:
             pass
 
     def _snapshot_for_hud(self) -> dict:
-        if self.snapshot:
-            return dict(self.snapshot)
-        cache = afg.load_cache(afg.CACHE_TTL_SECONDS)
-        if isinstance(cache, dict):
-            cache = dict(cache)
-            cache["_from_cache"] = True
-            return cache
-        return {"codex": {}, "claude": {}, "_from_cache": False}
+        return self._snapshot_view()
+
+    def _snapshot_view(self) -> dict:
+        return self.quota_state.current_snapshot()
 
     def _refresh_snapshot_for_hud(self) -> dict:
         self._do_fetch(blocking=True)
@@ -625,8 +715,7 @@ class TrayApp:
         # caught so the fetch lock is always released cleanly AND the thread
         # survives to try again on the next poll.
         try:
-            snap = _snapshot()
-            self.snapshot = snap
+            snap = self.quota_state.refresh_snapshot(force_refresh=True)
             self._check_thresholds(snap)
             self._apply_to_icon()
         except Exception as e:
@@ -673,9 +762,10 @@ class TrayApp:
     def _apply_to_icon(self):
         if not self.icon:
             return
-        m = _max_pct(self.snapshot)
+        snap = self._snapshot_view()
+        m = _max_pct(snap)
         self.icon.icon = _make_icon(m)
-        self.icon.title = _summary_line(self.snapshot)
+        self.icon.title = _summary_line(snap)
         try:
             self.icon.update_menu()
         except Exception:
@@ -704,7 +794,11 @@ class TrayApp:
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Refresh now", self._refresh_now),
-            pystray.MenuItem(self._hud_label, self._toggle_hud),
+            pystray.MenuItem(
+                self._hud_label,
+                self._toggle_hud,
+                enabled=self._hud_action_enabled,
+            ),
             pystray.MenuItem("Quit", self._quit),
         )
 
@@ -713,10 +807,11 @@ class TrayApp:
         self._do_fetch()
         self.icon = pystray.Icon(
             "ai-fuelgauge",
-            icon=_make_icon(_max_pct(self.snapshot)),
-            title=_summary_line(self.snapshot),
+            icon=_make_icon(_max_pct(self._snapshot_view())),
+            title=_summary_line(self._snapshot_view()),
             menu=self._menu(),
         )
+        self._restore_hud_visibility()
         threading.Thread(target=self._poller, daemon=True).start()
         self.icon.run()  # blocks until _quit()
 

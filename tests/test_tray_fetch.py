@@ -31,7 +31,7 @@ class TestDoFetchExceptionHandling:
             "claude": None,
         }
 
-        with patch("tray._snapshot", return_value=snap):
+        with patch.object(app.quota_state, "refresh_snapshot", return_value=snap):
             with patch.object(
                 app,
                 "_apply_to_icon",
@@ -46,7 +46,7 @@ class TestDoFetchExceptionHandling:
         app = TrayApp(interval=300)
         snap = {"codex": {"primary": {"used_percent": 1}}, "claude": None}
 
-        with patch("tray._snapshot", return_value=snap):
+        with patch.object(app.quota_state, "refresh_snapshot", return_value=snap):
             with patch.object(
                 app,
                 "_apply_to_icon",
@@ -65,8 +65,10 @@ class TestDoFetchExceptionHandling:
         existing path.)"""
         app = TrayApp(interval=300)
 
-        with patch(
-            "tray._snapshot", side_effect=ConnectionError("network dead")
+        with patch.object(
+            app.quota_state,
+            "refresh_snapshot",
+            side_effect=ConnectionError("network dead"),
         ):
             app._do_fetch()  # must not raise
 
@@ -74,16 +76,22 @@ class TestDoFetchExceptionHandling:
         app._fetch_lock.release()
 
     def test_snapshot_raised_does_not_overwrite_snapshot(self):
-        """If _snapshot raises, the old self.snapshot must remain intact —
+        """If refresh raises, the old quota-state snapshot must remain intact —
         we don't want transient network blips to wipe good data."""
         app = TrayApp(interval=300)
-        app.snapshot = {"codex": {"primary": {"used_percent": 42}}}
+        app.quota_state._snapshot = {"codex": {"primary": {"used_percent": 42}}}
 
-        with patch("tray._snapshot", side_effect=RuntimeError("kaboom")):
+        with patch.object(
+            app.quota_state,
+            "refresh_snapshot",
+            side_effect=RuntimeError("kaboom"),
+        ):
             app._do_fetch()
 
         # Old snapshot still there
-        assert app.snapshot == {"codex": {"primary": {"used_percent": 42}}}
+        assert app.quota_state.current_snapshot() == {
+            "codex": {"primary": {"used_percent": 42}}
+        }
 
     def test_three_consecutive_apply_failures_do_not_deadlock(self):
         """Cumulative test: lock is released on each failure so the next
@@ -91,7 +99,7 @@ class TestDoFetchExceptionHandling:
         app = TrayApp(interval=300)
         snap = {"codex": {"primary": {"used_percent": 10}}, "claude": None}
 
-        with patch("tray._snapshot", return_value=snap):
+        with patch.object(app.quota_state, "refresh_snapshot", return_value=snap):
             with patch.object(
                 app, "_apply_to_icon", side_effect=RuntimeError("boom")
             ):
@@ -112,14 +120,18 @@ class TestDoFetchExceptionHandling:
         def fake_apply():
             apply_calls["count"] += 1
 
-        with patch("tray._snapshot", return_value=snap):
+        def fake_refresh(**_kwargs):
+            app.quota_state._snapshot = snap
+            return snap
+
+        with patch.object(app.quota_state, "refresh_snapshot", side_effect=fake_refresh):
             with patch.object(app, "_apply_to_icon", side_effect=fake_apply):
                 app._do_fetch()
 
-        assert app.snapshot == snap
+        assert app.quota_state.current_snapshot() == snap
         assert apply_calls["count"] == 1
 
-    def test_snapshot_writes_shared_cache_for_hud(self):
+    def test_snapshot_uses_shared_quota_state_service(self):
         codex = {"primary": {"used_percent": 25}}
         claude = {"primary": {"used_percent": 35}}
 
@@ -129,8 +141,17 @@ class TestDoFetchExceptionHandling:
                     with patch("tray.afg.save_cache") as save_cache:
                         snap = __import__("tray")._snapshot()
 
-        assert snap == {"codex": codex, "claude": claude}
-        save_cache.assert_called_once_with(snap)
+        assert snap == {
+            "codex": {"primary": {"used_percent": 25}, "_source": "fresh-api"},
+            "claude": claude,
+            "_from_cache": False,
+        }
+        save_cache.assert_called_once_with(
+            {
+                "codex": {"primary": {"used_percent": 25}, "_source": "fresh-api"},
+                "claude": claude,
+            }
+        )
 
     def test_threshold_notification_names_codex_provider(self):
         app = TrayApp(interval=300)
@@ -195,14 +216,23 @@ class TestDoFetchExceptionHandling:
     def test_hud_label_reflects_process_state(self):
         app = TrayApp(interval=300)
 
-        assert app._hud_label(None) == "Show HUD"
+        with patch.object(app, "_external_hud_running", return_value=False):
+            assert app._hud_label(None) == "Show HUD"
 
         class RunningThread:
             def is_alive(self):
                 return True
 
         app._hud_thread = RunningThread()
-        assert app._hud_label(None) == "Hide HUD"
+        with patch.object(app, "_external_hud_running", return_value=True):
+            assert app._hud_label(None) == "Hide HUD"
+
+    def test_hud_label_reflects_external_hud_lock(self):
+        app = TrayApp(interval=300)
+
+        with patch("hud.acquire_hud_lock", return_value=None):
+            assert app._hud_label(None) == "Close HUD"
+            assert app._hud_action_enabled(None) is True
 
     def test_start_hud_runs_in_process_thread(self):
         app = TrayApp(interval=123)
@@ -227,13 +257,116 @@ class TestDoFetchExceptionHandling:
             return thread
 
         with patch("tray.threading.Thread", side_effect=make_thread):
-            app._start_hud()
+            with patch("hud.acquire_hud_lock", return_value=123) as acquire_lock:
+                app._start_hud()
 
+        acquire_lock.assert_called_once_with()
         assert created
         assert created[0].target == app._run_hud
         assert created[0].daemon is True
         assert created[0].started is True
         assert app._hud_thread is created[0]
+        assert app._hud_instance_lock_fd == 123
+
+    def test_start_hud_skips_when_another_hud_owns_lock(self):
+        app = TrayApp(interval=300)
+
+        with patch("hud.acquire_hud_lock", return_value=None) as acquire_lock:
+            with patch("tray.threading.Thread") as thread:
+                app._start_hud()
+                assert app._hud_label(None) == "Close HUD"
+
+        assert acquire_lock.call_count == 2
+        thread.assert_not_called()
+        assert app._hud_thread is None
+
+    def test_toggle_hud_requests_external_hud_close(self):
+        app = TrayApp(interval=300)
+        app.icon = MagicMock()
+
+        with patch("hud.acquire_hud_lock", return_value=None):
+            with patch("hud.request_hud_close") as request_hud_close:
+                with patch("hud.save_visibility") as save_visibility:
+                    with patch.object(app, "_watch_external_hud_close") as watch_close:
+                        with patch.object(app, "_start_hud") as start_hud:
+                            app._toggle_hud()
+
+        request_hud_close.assert_called_once_with()
+        save_visibility.assert_called_once_with(False)
+        watch_close.assert_called_once_with()
+        start_hud.assert_not_called()
+        app.icon.update_menu.assert_called_once_with()
+
+    def test_toggle_hud_starts_and_remembers_visible(self):
+        app = TrayApp(interval=300)
+
+        with patch.object(app, "_external_hud_running", return_value=False):
+            with patch("hud.save_visibility") as save_visibility:
+                with patch.object(app, "_start_hud") as start_hud:
+                    app._toggle_hud()
+
+        start_hud.assert_called_once_with()
+        save_visibility.assert_called_once_with(True)
+
+    def test_toggle_hud_stops_and_remembers_hidden(self):
+        app = TrayApp(interval=300)
+
+        class RunningThread:
+            def is_alive(self):
+                return True
+
+        app._hud_thread = RunningThread()
+
+        with patch("hud.save_visibility") as save_visibility:
+            with patch.object(app, "_stop_hud") as stop_hud:
+                app._toggle_hud()
+
+        stop_hud.assert_called_once_with()
+        save_visibility.assert_called_once_with(False)
+
+    def test_restore_hud_visibility_starts_hud_when_enabled(self):
+        app = TrayApp(interval=300)
+        app.icon = MagicMock()
+
+        with patch("hud.load_visibility", return_value=True):
+            with patch.object(app, "_external_hud_running", return_value=False):
+                with patch.object(app, "_start_hud") as start_hud:
+                    app._restore_hud_visibility()
+
+        start_hud.assert_called_once_with()
+        app.icon.update_menu.assert_called_once_with()
+
+    def test_restore_hud_visibility_keeps_hud_hidden_when_disabled(self):
+        app = TrayApp(interval=300)
+
+        with patch("hud.load_visibility", return_value=False):
+            with patch.object(app, "_start_hud") as start_hud:
+                app._restore_hud_visibility()
+
+        start_hud.assert_not_called()
+
+    def test_restore_hud_visibility_takes_over_external_hud(self):
+        app = TrayApp(interval=300)
+
+        class InlineThread:
+            def __init__(self, target, daemon):
+                self.target = target
+                self.daemon = daemon
+
+            def start(self):
+                self.target()
+
+        states = iter([True, False])
+
+        with patch("hud.load_visibility", return_value=True):
+            with patch.object(app, "_external_hud_running", side_effect=lambda: next(states)):
+                with patch.object(app, "_request_external_hud_close") as request_close:
+                    with patch.object(app, "_start_hud") as start_hud:
+                        with patch("tray.threading.Thread", InlineThread):
+                            app._restore_hud_visibility()
+
+        request_close.assert_called_once_with()
+        start_hud.assert_called_once_with()
 
     def test_stop_hud_schedules_in_process_window_quit(self):
         app = TrayApp(interval=300)
@@ -261,21 +394,24 @@ class TestDoFetchExceptionHandling:
 
     def test_snapshot_for_hud_uses_tray_snapshot_before_cache(self):
         app = TrayApp(interval=300)
-        app.snapshot = {"codex": {"primary": {"used_percent": 22}}}
+        expected = {"codex": {"primary": {"used_percent": 22}}}
 
-        with patch("tray.afg.load_cache") as load_cache:
+        with patch.object(app.quota_state, "current_snapshot", return_value=expected) as current_snapshot:
             result = app._snapshot_for_hud()
 
-        assert result == app.snapshot
-        assert result is not app.snapshot
-
-        load_cache.assert_not_called()
+        assert result == expected
+        current_snapshot.assert_called_once_with()
 
     def test_snapshot_for_hud_falls_back_to_shared_cache(self):
         app = TrayApp(interval=300)
-        cache = {"codex": {"primary": {"used_percent": 33}}}
-
-        with patch("tray.afg.load_cache", return_value=cache):
+        with patch.object(
+            app.quota_state,
+            "current_snapshot",
+            return_value={
+                "codex": {"primary": {"used_percent": 33}},
+                "_from_cache": True,
+            },
+        ):
             assert app._snapshot_for_hud() == {
                 "codex": {"primary": {"used_percent": 33}},
                 "_from_cache": True,
@@ -286,7 +422,7 @@ class TestDoFetchExceptionHandling:
         snap = {"codex": {"primary": {"used_percent": 44}}}
 
         def fake_fetch(**_kwargs):
-            app.snapshot = snap
+            app.quota_state._snapshot = snap
 
         with patch.object(app, "_do_fetch", side_effect=fake_fetch) as do_fetch:
             assert app._refresh_snapshot_for_hud() == snap
@@ -312,3 +448,46 @@ class TestDoFetchExceptionHandling:
         assert captured["cache_only"] is True
         assert captured["snapshot_loader"] == app._snapshot_for_hud
         assert captured["refresh_loader"] == app._refresh_snapshot_for_hud
+
+    def test_run_hud_releases_singleton_lock_and_refreshes_menu(self):
+        app = TrayApp(interval=123)
+        app._hud_instance_lock_fd = 123
+        app.icon = MagicMock()
+
+        class FakeHudApp:
+            def __init__(self, **_kwargs):
+                self.root = MagicMock()
+
+            def run(self):
+                pass
+
+        with patch("hud.HudApp", FakeHudApp):
+            with patch("hud.release_hud_lock") as release_lock:
+                with patch("hud.save_visibility") as save_visibility:
+                    app._run_hud()
+
+        release_lock.assert_called_once_with(123)
+        save_visibility.assert_called_once_with(False)
+        app.icon.update_menu.assert_called_once_with()
+        assert app._hud_app is None
+        assert app._hud_thread is None
+        assert app._hud_instance_lock_fd is None
+        assert app._hud_stop_requested is False
+
+    def test_run_hud_init_failure_preserves_visible_preference(self):
+        app = TrayApp(interval=123)
+        app._hud_instance_lock_fd = 123
+        app.icon = MagicMock()
+
+        class FailingHudApp:
+            def __init__(self, **_kwargs):
+                raise RuntimeError("tk failed")
+
+        with patch("hud.HudApp", FailingHudApp):
+            with patch("hud.release_hud_lock") as release_lock:
+                with patch("hud.save_visibility") as save_visibility:
+                    app._run_hud()
+
+        release_lock.assert_called_once_with(123)
+        save_visibility.assert_not_called()
+        app.icon.update_menu.assert_called_once_with()

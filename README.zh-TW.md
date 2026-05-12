@@ -100,18 +100,20 @@ Claude 認證失敗時 tray 會顯示不同 label —— `auth`（refresh 失敗
 Token 過期但 24 小時內有成功 probe 過時，tray 會把那次的數值標成 stale 繼續
 顯示；window 已 reset 過的 bar 會明確標出已 omit，並另外加一行選單給回復動作。
 
-Tray 選單也可以 show/hide 一個小型 floating HUD。HUD 預設是 compact，只顯示
-Codex 5h + Claude 5h；點一下展開成 Codex 5h/week + Claude 5h/week，再點一下
-回 compact。拖曳 HUD 可以移動位置，位置會記住。在 HUD 上滾滑鼠滾輪可以調
-透明度；右鍵則有 Refresh / Toggle / Opacity presets / Quit。從 tray 開啟時，HUD
-是同一份 tray quota state 的另一種呈現：平常更新會重畫 tray snapshot，HUD 上的
-Refresh 則會請 tray 先 fetch 再重畫，不會自己再跑第二套獨立 probe loop。
+Tray 選單也可以 show/hide 一個小型 floating HUD，且 tray 會記住這次選擇，下次
+啟動時自動恢復。HUD 預設是 compact，只顯示 Codex 5h + Claude 5h；點一下展開成
+Codex 5h/week + Claude 5h/week，再點一下回 compact。拖曳 HUD 可以移動位置，位置
+會記住。在 HUD 上滾滑鼠滾輪可以調透明度；右鍵則有 Refresh / Toggle / Opacity
+presets / Quit。HUD 是同一份 tray quota state 的另一種呈現：平常更新會重畫 tray
+snapshot，HUD 上的 Refresh 則會請 tray 先 fetch 再重畫，不會自己再跑第二套獨立
+probe loop。同一時間只會有一個 HUD instance，standalone HUD 和 tray-owned HUD 不會
+疊成兩個浮窗。
 
 ![Floating HUD expanded view with sample quota data](docs/assets/hud-expanded.png)
 
 通知在 Windows 用 `winotify`，其他平台用 `plyer`。
 
-## 支援情況（v0.2.0-preview）
+## 支援情況（v0.3.0）
 
 | 環境 | CLI | Tray | 備註 |
 |---|---|---|---|
