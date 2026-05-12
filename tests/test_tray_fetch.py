@@ -227,10 +227,8 @@ class TestDoFetchExceptionHandling:
             return thread
 
         with patch("tray.threading.Thread", side_effect=make_thread):
-            with patch("tray.subprocess.Popen") as popen:
-                app._start_hud()
+            app._start_hud()
 
-        popen.assert_not_called()
         assert created
         assert created[0].target == app._run_hud
         assert created[0].daemon is True

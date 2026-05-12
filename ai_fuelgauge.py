@@ -1329,7 +1329,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--interval", type=interval_seconds, default=300,
                     help="Tray poll interval in seconds (default: 300, minimum: 1)")
     ap.add_argument("--no-detach", action="store_true",
-                    help="(Windows tray) stay in the foreground instead of auto-relaunching as pythonw "
+                    help="(Windows tray/HUD) stay in the foreground instead of auto-relaunching as pythonw "
                          "detached — useful for debugging so stderr stays visible")
     args = ap.parse_args(argv)
 
@@ -1343,6 +1343,10 @@ def main(argv: list[str]) -> int:
         return run_tray(interval=args.interval, detach=not args.no_detach)
 
     if args.hud:
+        if not args.no_detach:
+            from windows_detach import reexec_detached_on_windows
+            if reexec_detached_on_windows(sys.argv):
+                return 0
         try:
             from hud import run_hud
         except ImportError as e:

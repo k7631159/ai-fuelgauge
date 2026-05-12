@@ -93,6 +93,10 @@ python ai_fuelgauge.py --tray --interval 600   # poll every 10 min
 python ai_fuelgauge.py --hud           # small floating overlay, no tray required
 ```
 
+On Windows, tray and HUD modes relaunch themselves with `pythonw.exe` so the
+floating UI does not keep a black console window open. Add `--no-detach` when
+you want to keep stderr visible for debugging.
+
 The tray icon shows a coloured dot reflecting your highest utilization across
 both subscriptions. Right-click for the detailed menu and a **Refresh now**
 option. A desktop notification fires when:

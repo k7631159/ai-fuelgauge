@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import math
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -61,6 +60,7 @@ def _notify(title: str, message: str) -> None:
 # Reuse probe functions from sibling module.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ai_fuelgauge as afg  # noqa: E402
+from windows_detach import reexec_detached_on_windows as _reexec_detached_on_windows  # noqa: E402
 
 
 DEFAULT_INTERVAL_SECONDS = 300
@@ -72,45 +72,6 @@ HYSTERESIS_PCT = 10           # must drop this far below threshold before re-not
 # the lifetime of the process; the OS releases it on exit (including crash),
 # so there is no stale-pid cleanup to manage.
 _LOCK_FILE = Path.home() / ".cache" / "ai-fuelgauge-tray.lock"
-
-
-def _reexec_detached_on_windows(argv: "list[str]") -> bool:
-    """If launched via console `python.exe` on Windows, relaunch as `pythonw.exe`
-    detached from the parent console and return True (caller should exit).
-
-    Without this, closing the terminal that ran `python ai_fuelgauge.py --tray`
-    kills the tray because `python.exe` is a console-subsystem binary tied to
-    its parent console. `pythonw.exe` is a Windows-subsystem binary with no
-    console attachment, so it survives.
-
-    Skipped for: non-Windows, already-pythonw, frozen PyInstaller binaries,
-    `--no-detach` flag (handled by caller before invoking this).
-    """
-    if sys.platform != "win32":
-        return False
-    exe = Path(sys.executable)
-    if exe.name.lower() != "python.exe":
-        return False  # already pythonw, or frozen binary — no re-exec needed
-    pythonw = exe.with_name("pythonw.exe")
-    if not pythonw.exists():
-        return False  # some stripped installs lack pythonw; just run foreground
-    import subprocess
-    try:
-        subprocess.Popen(
-            [str(pythonw), *argv],
-            creationflags=(
-                subprocess.DETACHED_PROCESS
-                | subprocess.CREATE_NEW_PROCESS_GROUP
-                | subprocess.CREATE_NO_WINDOW
-            ),
-            close_fds=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        return False
-    return True
 
 
 def _acquire_single_instance_lock() -> "int | None":

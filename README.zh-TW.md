@@ -85,6 +85,9 @@ python ai_fuelgauge.py --tray --interval 600   # 每 10 分鐘 poll 一次
 python ai_fuelgauge.py --hud           # 小型浮動 HUD，不一定要開 tray
 ```
 
+在 Windows 上，tray 和 HUD 模式會自動用 `pythonw.exe` 重新啟動，避免浮動 UI
+旁邊卡著黑色 console 視窗。需要保留 stderr 方便 debug 時，可以加 `--no-detach`。
+
 Tray 圖示會顯示一個彩色圓點，反映你兩個訂閱中使用率最高的那一邊。右鍵可以看
 詳細選單和 **Refresh now** 選項。當以下情況發生時會跳桌面通知：
 
