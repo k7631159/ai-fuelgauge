@@ -28,9 +28,25 @@ Thumbs.db
 # Runtime cache (should not be committed)
 .cache/
 usage-quota.json
+usage-quota*.json
+*-debug.json
+debug-*.json
+debug-output*.json
 
 # Local testing
 *.log
+
+# Local secrets / credentials
+.env
+.env.*
+!.env.example
+.codex/
+.claude/
+auth.json
+credentials.json
+.credentials.json
+*.pem
+*.key
 
 # Per-machine handoff notes for AI assistants (private context)
 CLAUDE.md

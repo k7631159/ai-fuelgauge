@@ -142,7 +142,9 @@ Notifications use Windows toast (`winotify`) or `plyer` elsewhere.
 If you try it on an untested combination, please open an issue with the output
 of `python ai_fuelgauge.py --debug --json`. **Before posting**: `--debug` dumps
 the raw OAuth usage-endpoint response, which can include account-level fields —
-redact anything you don't want in a public issue.
+redact anything you don't want in a public issue. Do not post OAuth tokens,
+refresh tokens, `Authorization` headers, account / organization identifiers, or
+full credential files.
 
 ## How it works
 

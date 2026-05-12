@@ -127,7 +127,9 @@ probe loop。同一時間只會有一個 HUD instance，standalone HUD 和 tray-
 
 如果你在沒測過的組合上試了，麻煩開一個 issue，附上 `python ai_fuelgauge.py --debug --json`
 的輸出。**張貼到公開 issue 前**：`--debug` 會 dump 出原始 OAuth usage endpoint
-回應，裡面可能包含帳號層級的欄位 —— 不想公開的欄位請先移除。
+回應，裡面可能包含帳號層級的欄位 —— 不想公開的欄位請先移除。不要貼 OAuth
+token、refresh token、`Authorization` header、account / organization id，或完整
+credentials 檔案。
 
 ## 運作原理
 
