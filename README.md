@@ -4,6 +4,10 @@
 
 **English** · [繁體中文](./README.zh-TW.md)
 
+`ai-fuelgauge` is a source-only Codex quota and Claude Code usage monitor for
+ChatGPT / Claude subscriptions. It can run as a CLI, a system-tray quota
+monitor, or a small floating HUD.
+
 ## Disclaimer — please read before using
 
 This repository is source code for a **personal** AI-subscription quota viewer,
@@ -29,7 +33,9 @@ myself; the source is public in case it's useful as a reference.
 
 A small cross-platform Python CLI that shows how much of your 5-hour and
 weekly rate-limit windows you've already burned through, for both
-subscriptions at once. Optional system-tray mode with threshold notifications.
+subscriptions at once. Optional system-tray and floating-HUD modes keep Codex
+quota, Claude quota, ChatGPT subscription usage, and Claude Code usage visible
+without switching between apps.
 
 ## Example output
 

@@ -4,6 +4,10 @@
 
 [English](./README.md) · **繁體中文**
 
+`ai-fuelgauge` 是一個只從原始碼執行的 Codex quota / Claude Code usage
+monitor，用來看 ChatGPT / Claude 訂閱配額。它可以當 CLI、系統匣 quota monitor，
+或小型 floating HUD 使用。
+
 ## 重要聲明 —— 使用前請先看
 
 這個 repo 是一個**個人用途**的 AI 訂閱用量查看工具原始碼，公開是為了透明度和技術參考，
@@ -23,7 +27,8 @@ application 使用的，這個工具顯然不在那條被明確祝福的路上�
 原始碼放出來是想說搞不好可以當參考。
 
 一個小小的跨平台 Python CLI，一次顯示兩個訂閱的 5 小時和每週 rate-limit window
-你已經用掉多少。另外有選用的系統匣（tray）模式，可以在超過門檻時跳通知。
+你已經用掉多少。另外有選用的系統匣（tray）和 floating HUD 模式，讓 Codex quota、
+Claude quota、ChatGPT subscription usage、Claude Code usage 不用切 app 也能看見。
 
 ## 範例輸出
 
